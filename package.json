@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/run.js"
+    "test": "node tests/run.js",
+    "portal": "node portal/server.js"
   },
   "engines": {
     "node": ">=18"

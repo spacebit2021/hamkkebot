@@ -22,6 +22,8 @@ const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
+const CHARGE_PORTAL_URL = (process.env.CHARGE_PORTAL_URL || '').replace(/\/$/, ''); // 원격 충전·환전 페이지 주소
+const CHAIN = require('./chain');
 const SESSION_DAYS = 14;
 const BOTS = require('./bots');
 const DOC = require('./doc');
@@ -179,6 +181,8 @@ function forwardToExperts(room, text) {
   }
 }
 function record(org, entry) {
+  // 환전할 수 있는 토큰(번 토큰)은 지갑보다 많을 수 없음: 쓸 때는 번 토큰이 아닌 것(충전·지급받은 것)부터 쓰는 셈
+  if ((org.exchangeable || 0) > Math.max(0, org.wallet)) org.exchangeable = Math.max(0, org.wallet);
   const e = { id: newId('t'), at: Date.now(), orgId: org.id, orgName: org.name, ...entry, walletAfter: org.wallet };
   S.ledger.push(e); save(); emit('room', {}, org.id);
   return e;
@@ -198,7 +202,7 @@ function takeFee(key, amount) {
 // 기업이 소득을 받음: 지갑에는 운영 기관 몫을 뺀 만큼, 거래 기록에 받은 것과 운영 기관 몫을 따로
 function creditOrg(org, amount, entry) {
   const { fee, net } = takeFee('o:' + org.id, amount);
-  org.wallet += net;
+  org.wallet += net; org.exchangeable = (org.exchangeable || 0) + net; // 다른 기업에게서 번 토큰만 환전 가능
   record(org, { ...entry, amount: net, gross: amount, fee });
   if (fee) record(org, { type: 'fee', amount: fee, source: entry.type, gross: amount, botName: entry.botName, talentTitle: entry.talentTitle });
   return { fee, net };
@@ -1604,6 +1608,7 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
+    chain: { ...ledger.info(), portalUrl: CHARGE_PORTAL_URL, clients: S.apiClients.map(c => ({ id: c.id, name: c.name, keyId: c.keyId, scopes: c.scopes, mintLimit: c.mintLimit, createdAt: c.createdAt, revokedAt: c.revokedAt, lastUsedAt: c.lastUsedAt })), txs: S.chain.txs.slice(-50).reverse().map(t => ({ ...ledger.getTx(t.hash), orgName: (orgById(ledger.accountOf(t.address)) || {}).name, clientName: (S.apiClients.find(c => c.id === t.clientId) || {}).name })) },
     feePct: feePct(), platformFees: S.platformFees || 0, feeHistory: (S.feeHistory || []).slice(-10).reverse(),
     adminTg: S.adminTg ? { title: S.adminTg.title, linkedAt: S.adminTg.linkedAt, by: S.adminTg.by } : null, tgReady: !!TG_TOKEN,
     bposts: S.bposts.slice().sort((a, b) => b.at - a.at).slice(0, 200).map(x => ({ ...bpostView(null, x), ...((boardOf(x.botId) || {}).visibility === 'own' ? { values: {}, internal: true } : {}), boardName: (boardOf(x.botId) || {}).name || '(없어진 게시판)', botName: (botById(x.botId) || {}).name || '', visibility: (boardOf(x.botId) || {}).visibility, fields: (boardOf(x.botId) || { fields: [] }).fields })),
@@ -1704,6 +1709,15 @@ async function adminApi(req, res, p, sess) {
     save(); emit('fee', { pct: v, from: old }, '*');
     return json(res, 200, { ok: true, pct: v });
   }
+  if (p === '/api/admin/chain/clients') {
+    const scopes = ['read', 'session', 'mint', 'burn'].filter(x => (Array.isArray(b.scopes) ? b.scopes : ['read', 'session', 'mint', 'burn']).includes(x));
+    const lim = Number(b.mintLimit == null ? 100000 : b.mintLimit); if (!Number.isInteger(lim) || lim < 0 || lim > 1e8) return BAD(res, '하루 충전 한도는 0 이상 정수로 정해 주세요');
+    const c = { id: newId('k'), name: str(b.name, 40) || '충전·환전 페이지', keyId: 'hbk_' + crypto.randomBytes(8).toString('hex'), secret: crypto.randomBytes(32).toString('hex'), scopes, mintLimit: lim, createdAt: Date.now(), revokedAt: null, lastUsedAt: null };
+    S.apiClients.push(c); save();
+    return json(res, 200, { id: c.id, keyId: c.keyId, secret: c.secret, scopes, mintLimit: lim }); // 비밀 키는 이때 한 번만 보여 줌
+  }
+  const km = p.match(/^\/api\/admin\/chain\/clients\/(\w+)\/revoke$/);
+  if (km) { const c = S.apiClients.find(x => x.id === km[1]); if (!c) return BAD(res, '없는 키예요', 404); c.revokedAt = Date.now(); save(); return json(res, 200, { ok: true }); }
   if (p === '/api/admin/tg-admin/code') { S.adminLink = { code: crypto.randomBytes(4).toString('hex').toUpperCase(), exp: Date.now() + 10 * 6e4 }; save(); return json(res, 200, { code: S.adminLink.code, bot: tgUsername || null }); }
   if (p === '/api/admin/tg-admin/unlink') { if (S.adminTg) tgSend(S.adminTg.chatId, '관리자 답변 방 연결을 해제했어요.'); S.adminTg = null; save(); return json(res, 200, { ok: true }); }
   const wm = p.match(/^\/api\/admin\/bboard\/(\w+)\/(hide|delete)$/);
@@ -1907,7 +1921,7 @@ async function userApi(req, res, p, sess) {
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
       sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null,
-      feePct: feePct(),
+      feePct: feePct(), exchangeable: Math.max(0, Math.min(org.exchangeable || 0, org.wallet)), address: ledger.addressOf(org.id), portal: !!CHARGE_PORTAL_URL,
       boardTabs: boardTabs(org),
       talentTab: hasBot(org, 'talent') || S.talents.some(t => (t.orgId === org.id && t.status !== 'draft') || t.picks.some(x => x.orgId === org.id)),
       boardUnread: S.posts.filter(x => x.orgId === org.id && x.unreadAnswer).length,
@@ -2013,6 +2027,14 @@ async function userApi(req, res, p, sess) {
       return json(res, 200, talentView(org, t));
     }
     return BAD(res, '없는 기능이에요', 404);
+  }
+  // ----- 충전·환전 페이지로 넘기기 (일회용 코드 5분) -----
+  if (p === '/api/chain/handoff' && req.method === 'POST') {
+    if (!CHARGE_PORTAL_URL) return BAD(res, '충전·환전 페이지 주소가 아직 설정되지 않았어요. 관리자에게 알려 주세요.');
+    const code = crypto.randomBytes(16).toString('hex');
+    for (const k in S.handoffs) if (S.handoffs[k].exp < Date.now()) delete S.handoffs[k];
+    S.handoffs[code] = { orgId: org.id, by: user.name, exp: Date.now() + 5 * 6e4 }; save();
+    return json(res, 200, { url: `${CHARGE_PORTAL_URL}/?code=${code}` });
   }
   // ----- 질문 버튼 -----
   if (p === '/api/ask' && req.method === 'GET') {
@@ -2518,6 +2540,85 @@ async function userApi(req, res, p, sess) {
   }
 }
 
+// ---------- 토큰 API (블록체인과 같은 인터페이스) ----------
+// 충전(mint)·환전(burn)은 모두 이 원장 어댑터를 거침. 지금은 내부 장부(InternalAdapter), 나중에 실제 블록체인 어댑터로 교체.
+if (!S.apiClients) S.apiClients = [];  // [{id,name,keyId,secret,scopes,mintLimit,createdAt,revokedAt,lastUsedAt}]
+if (!S.handoffs) S.handoffs = {};      // 웹앱 → 충전 페이지 일회용 코드 {code:{orgId,by,exp}}
+if ((process.env.CHAIN_ADAPTER || 'internal') !== 'internal') new CHAIN.ChainAdapterNotReady(process.env.CHAIN_ADAPTER);
+const ledger = new CHAIN.InternalAdapter({
+  S, save, blockMs: +process.env.CHAIN_BLOCK_MS || 1000,
+  accounts: {
+    ids: () => S.orgs.map(o => o.id),
+    wallet: id => (orgById(id) || {}).wallet || 0,
+    exchangeable: id => { const o = orgById(id); return o ? Math.max(0, Math.min(o.exchangeable || 0, o.wallet)) : 0; },
+    credit: (id, n, t) => {
+      const o = orgById(id); o.wallet += n;
+      // 환전 반려로 돌려받는 토큰은 다시 환전할 수 있게 (같은 키가 소각한 그 신청일 때만)
+      const back = /^refund-/.test(t.ref) && S.chain.txs.some(x => x.type === 'burn' && x.status === 'confirmed' && x.clientId === t.clientId && x.address === t.address && x.ref === t.ref.slice(7) && x.amount === n);
+      if (back) o.exchangeable = (o.exchangeable || 0) + n;
+      record(o, { type: 'chain_mint', amount: n, txHash: t.hash, ref: t.ref, memo: t.memo, refund: back || undefined });
+    },
+    debit: (id, n, t) => { const o = orgById(id); if (o.wallet < n || (o.exchangeable || 0) < n) return false; o.wallet -= n; o.exchangeable -= n; record(o, { type: 'chain_burn', amount: n, txHash: t.hash, ref: t.ref, memo: t.memo }); return true; }
+  },
+  onConfirm: (t, id) => {
+    notifyOrg(id, t.type === 'mint' ? `토큰 ${t.amount}개 충전이 확정됐어요 (거래 ${t.hash.slice(0, 12)}…, 블록 ${t.blockNumber}).` : `토큰 ${t.amount}개 환전이 확정됐어요 (거래 ${t.hash.slice(0, 12)}…). 송금은 충전·환전 페이지에서 처리돼요.`);
+    emit('room', {}, id);
+  }
+});
+const nonces = new Map(); // 서명 재사용(재전송 공격) 막기: 5분 안에 같은 nonce 거절
+setInterval(() => { const t = Date.now() - 6 * 6e4; for (const [k, v] of nonces) if (v < t) nonces.delete(k); }, 6e4).unref();
+const rawBody = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e5) req.destroy(); }); req.on('end', () => ok(d)); });
+function chainAuth(req, path, raw) {
+  const h = req.headers, c = S.apiClients.find(x => x.keyId === h['x-hb-key'] && !x.revokedAt);
+  if (!c) return { code: 401, error: 'API 키가 없거나 폐기됐어요' };
+  const ts = +h['x-hb-timestamp'], nonce = String(h['x-hb-nonce'] || '');
+  if (!ts || Math.abs(Date.now() - ts) > 5 * 6e4) return { code: 401, error: '요청 시각이 5분 넘게 차이 나요 (서버 시계 확인)' };
+  if (!/^[0-9a-zA-Z]{16,64}$/.test(nonce)) return { code: 401, error: 'nonce가 필요해요' };
+  const want = CHAIN.sign(c.secret, req.method, path, String(ts), nonce, raw), got = String(h['x-hb-signature'] || '');
+  if (got.length !== want.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(want))) return { code: 401, error: '서명이 맞지 않아요' };
+  if (nonces.has(c.keyId + ':' + nonce)) return { code: 401, error: '이미 쓴 nonce예요 (같은 요청을 다시 보냈어요)' };
+  nonces.set(c.keyId + ':' + nonce, Date.now()); c.lastUsedAt = Date.now();
+  return { client: c };
+}
+async function chainApi(req, res, p) {
+  const raw = req.method === 'POST' ? await rawBody(req) : '';
+  const a = chainAuth(req, p, raw); if (a.error) return json(res, a.code, { error: a.error });
+  const c = a.client, need = s => c.scopes.includes(s);
+  let b = {}; if (raw) { try { b = JSON.parse(raw); } catch (e) { return json(res, 400, { error: 'JSON이 아니에요' }); } }
+  const acct = addr => { const id = ledger.accountOf(addr), o = id && orgById(id); return o ? { ...ledger.balanceOf(addr), name: o.name } : null; };
+  if (p === '/chain/v1/info' && req.method === 'GET') return json(res, 200, { ...ledger.info(), client: { name: c.name, scopes: c.scopes } });
+  if (p === '/chain/v1/sessions' && req.method === 'POST') {
+    if (!need('session')) return json(res, 403, { error: 'session 권한이 없어요' });
+    const h = S.handoffs[String(b.code || '')]; delete S.handoffs[String(b.code || '')]; save();
+    if (!h || h.exp < Date.now()) return json(res, 400, { error: '코드가 없거나 시간이 지났어요. 함께봇에서 「충전·환전」을 다시 눌러 주세요.' });
+    const o = orgById(h.orgId); if (!o) return json(res, 400, { error: '없는 기업이에요' });
+    return json(res, 200, { address: ledger.addressOf(o.id), by: h.by, ...acct(ledger.addressOf(o.id)) });
+  }
+  let m = p.match(/^\/chain\/v1\/accounts\/(hb1[0-9a-f]{38})(\/txs)?$/);
+  if (m && req.method === 'GET') {
+    if (!need('read')) return json(res, 403, { error: 'read 권한이 없어요' });
+    const ac = acct(m[1]); if (!ac) return json(res, 404, { error: '없는 주소예요' });
+    return json(res, 200, m[2] ? { address: m[1], txs: ledger.txsOf(m[1], 50) } : ac);
+  }
+  m = p.match(/^\/chain\/v1\/tx\/(0x[0-9a-f]{64})$/);
+  if (m && req.method === 'GET') { if (!need('read')) return json(res, 403, { error: 'read 권한이 없어요' }); const t = ledger.getTx(m[1]); return t ? json(res, 200, t) : json(res, 404, { error: '없는 거래예요' }); }
+  if (p === '/chain/v1/tx' && req.method === 'POST') {
+    const type = b.type;
+    if (type === 'mint' && !need('mint')) return json(res, 403, { error: 'mint(충전) 권한이 없어요' });
+    if (type === 'burn' && !need('burn')) return json(res, 403, { error: 'burn(환전) 권한이 없어요' });
+    const idem = str(b.idempotencyKey, 80); if (!idem) return json(res, 400, { error: 'idempotencyKey가 필요해요 (같은 충전이 두 번 되지 않게)' });
+    const amount = Number(b.amount);
+    if (type === 'mint' && !S.chain.txs.some(t => t.clientId === c.id && t.idem === idem)) {
+      const day = S.chain.txs.filter(t => t.clientId === c.id && t.type === 'mint' && t.status !== 'failed' && Date.now() - t.createdAt < 864e5).reduce((x, t) => x + t.amount, 0);
+      if (day + amount > c.mintLimit) return json(res, 400, { error: `이 키의 하루 충전 한도(${c.mintLimit}토큰)를 넘어요` });
+    }
+    const r = ledger.submit({ type, address: String(b.address || ''), amount, ref: str(b.ref, 80), memo: str(b.memo, 200), clientId: c.id, idem });
+    if (r.error) return json(res, 400, { error: r.error });
+    return json(res, r.replay ? 200 : 202, r.tx);
+  }
+  return json(res, 404, { error: '없는 API예요' });
+}
+
 // ---------- 할 일표 편집 링크 API (로그인 없이 편집 토큰으로) ----------
 async function todoEditApi(req, res, p) {
   const m = p.match(/^\/api\/te\/([a-f0-9]{32})$/);
@@ -2571,6 +2672,7 @@ http.createServer(async (req, res) => {
       return req.on('close', () => { clearInterval(ping); clients.delete(res); });
     }
     if (p.startsWith('/api/te/')) return await todoEditApi(req, res, p);
+    if (p.startsWith('/chain/v1/')) return await chainApi(req, res, p);
     if (p.startsWith('/api/admin/')) return await adminApi(req, res, p, sess);
     if (p.startsWith('/api/expert/')) return await expertApi(req, res, p, sess);
     if (p.startsWith('/api/')) return await userApi(req, res, p, sess);

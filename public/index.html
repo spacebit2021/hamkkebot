@@ -68,6 +68,7 @@ button{cursor:pointer}
 .bot textarea{min-height:70px}
 .human{font-size:11px;color:#06a77d;margin-left:6px}
 .wallet{margin:0 14px 10px;padding:10px 14px;border-radius:12px;background:var(--pri);color:var(--pri-ink);display:flex;justify-content:space-between;align-items:baseline}
+.walletacts{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:-4px 14px 10px}.walletacts .btn{min-height:40px;font-size:13px;padding:0 12px}
 .wallet span{font-size:13px;font-weight:500}.wallet b{font:800 22px "Gothic A1"}
 .paycard{align-self:center;width:min(440px,100%);border:1.5px solid var(--line);border-radius:16px;padding:14px 16px;background:var(--card);display:flex;flex-direction:column;gap:10px}
 .paycard b{font-size:15px}.paycard .acts{display:flex;gap:8px;flex-wrap:wrap}
@@ -206,6 +207,7 @@ textarea.field{min-height:80px;resize:vertical}
   <div class="todobox" id="todoBox" hidden><a class="docbtn sitelink" id="todoLink" target="_blank" rel="noopener"><span>할 일표</span><span class="note" style="padding:0" id="todoLinkN"></span></a><div class="todoacts"><a class="btn ghost sm" id="todoEdit" target="_blank" rel="noopener">고치기 ↗</a><button class="btn ghost sm" type="button" id="todoReset">링크 새로 만들기</button></div></div>
   <a class="docbtn sitelink" id="siteLink" target="_blank" rel="noopener" hidden><span>우리 홈페이지</span><span class="note" style="padding:0" id="siteLinkN"></span></a>
   <div class="wallet" id="wallet"><span>상담 토큰</span><b id="walletN">0</b></div>
+  <div class="walletacts"><span class="note" style="padding:0" id="exchN"></span><button class="btn ghost sm" type="button" id="chargeBtn">충전·환전 ↗</button></div><div class="docerr" id="chargeErr" style="margin:0 14px"></div>
   <nav class="rooms" id="rooms" aria-label="채팅방"></nav>
   <button class="newroom" id="newRoom">+ 새 채팅방</button>
   <div class="me"><span id="meName"></span><button type="button" id="logout">로그아웃</button></div>
@@ -386,7 +388,7 @@ function renderLog(){
  for(const id in keep){const c=document.querySelector(`.paycard[data-pay="${id}"]`);if(c){c.querySelector('[data-amtin]').value=keep[id][0];c.querySelector('[data-memo]').value=keep[id][1]}}
  $('log').scrollTop=$('log').scrollHeight;
 }
-function render(){$('askFab').hidden=false;$('walletN').textContent=S.wallet||0;$('boardBadge').hidden=!S.boardUnread;$('boardBadge').textContent=S.boardUnread||'';{const sc=S.sched;$('schedLink').hidden=!sc;if(sc){$('schedLink').href=sc.url;$('schedLinkN').textContent=`버전 ${sc.v} ↗`}}{const td=S.todo;$('todoBox').hidden=!td;if(td){$('todoLink').href=td.url;$('todoEdit').href=td.editUrl;$('todoLinkN').textContent=`${td.count}개 · 점검 ${td.left===0?'오늘':'D-'+td.left} ↗`}}{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
+function render(){$('askFab').hidden=false;$('exchN').textContent=`환전 가능 ${S.exchangeable||0}`;$('exchN').title='다른 기업에게서 번 토큰만 환전할 수 있어요';$('walletN').textContent=S.wallet||0;$('boardBadge').hidden=!S.boardUnread;$('boardBadge').textContent=S.boardUnread||'';{const sc=S.sched;$('schedLink').hidden=!sc;if(sc){$('schedLink').href=sc.url;$('schedLinkN').textContent=`버전 ${sc.v} ↗`}}{const td=S.todo;$('todoBox').hidden=!td;if(td){$('todoLink').href=td.url;$('todoEdit').href=td.editUrl;$('todoLinkN').textContent=`${td.count}개 · 점검 ${td.left===0?'오늘':'D-'+td.left} ↗`}}{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
 
 let callOpen=null, reviewMsg=null, xq='', xsort='';
 function renderBots(){
@@ -520,6 +522,7 @@ $('log').addEventListener('click',async e=>{
 
 $('todoReset').addEventListener('click',async e=>{const b=e.currentTarget;if(b.textContent!=='정말 바꿀까요?'){b.textContent='정말 바꿀까요?';return}b.disabled=true;await api('/api/todo/token',{});b.disabled=false;b.textContent='링크 새로 만들기';load().catch(()=>{})});
 const boardSummary=bd=>`<div class="note" style="padding:0"><b>게시판 「${esc(bd.name)}」</b> · ${esc(VISL[bd.visibility])} · 항목: ${bd.fields.map(f=>esc(f.label)+(f.private?'(비공개)':'')).join(', ')}${bd.action?` · 버튼 「${esc(bd.action.label)}」${bd.action.price?` ${bd.action.price}토큰`:''}`:''}${bd.consent?' · 당사자 동의 필요':''}</div>`;
+$('chargeBtn').onclick=async()=>{const w=window.open('about:blank','_blank');const j=await api('/api/chain/handoff',{});if(j.error){if(w)w.close();$('chargeErr').textContent=j.error;return}$('chargeErr').textContent='';if(w){w.opener=null;w.location=j.url}else location.href=j.url};
 /* ===== 질문 버튼 ===== */
 async function askLoad(){const j=await api('/api/ask');$('askNote').textContent=j.live?'관리자 텔레그램으로 바로 전달돼요':'관리자에게 전달돼요 (답은 여기와 기업방에 와요)';
  $('askList').innerHTML=j.items.length?j.items.map(q=>`<div class="askq">${esc(q.body)}<div class="askmeta" style="color:inherit;opacity:.8">#${q.n} · ${when(q.at)}${q.secret?' · 비밀글':''}</div></div>${q.answers.map(a=>`<div class="aska"><b>운영 기관</b>\n${esc(a.body)}<div class="askmeta">${when(a.at)}</div></div>`).join('')||'<div class="askmeta" style="align-self:flex-end">답변을 기다리고 있어요</div>'}`).join(''):'<p class="note" style="padding:0">함께봇 사용법, 토큰, 지원사업 등 무엇이든 물어보세요. 답변은 Q&amp;A 게시판에도 남아요.</p>';
