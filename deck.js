@@ -137,6 +137,31 @@ async function buildDeck(outline, orgName) {
         sl.addText(it.head, { x, y: 3.15, w: cw, h: 0.8, fontFace: FONT, fontSize: 18, bold: true, color: P.dark, align: 'center', valign: 'top', margin: 0, isTextBox: true });
         sl.addText(it.text, { x: x + 0.1, y: 3.95, w: cw - 0.2, h: 2.2, fontFace: FONT, fontSize: n === 5 ? 14 : 15, color: P.ink, valign: 'top', margin: 0, isTextBox: true });
       });
+    } else if (s.kind === 'gantt') { // 일정 봇 보고용: 서버가 일정 데이터로 직접 만든 장 (AI가 만든 내용 아님)
+      sl = content(s);
+      const ms = d => Date.parse(d + 'T00:00:00Z'), DAYMS = 864e5;
+      let from = s.items.reduce((m, x) => x.start < m ? x.start : m, s.items[0].start), to = s.items.reduce((m, x) => x.end > m ? x.end : m, s.items[0].end);
+      if (s.today && s.today < from) from = s.today; if (s.today && s.today > to) to = s.today;
+      const span = Math.max(1, (ms(to) - ms(from)) / DAYMS + 1);
+      const LX = M, LW = 3.3, TX = M + LW + 0.2, TW = W - M - TX, TOP = 1.95, rh = Math.min(0.62, 4.4 / s.items.length);
+      const xOf = d => TX + ((ms(d) - ms(from)) / DAYMS) / span * TW;
+      // 위쪽 날짜 눈금 (최대 8개)
+      const step = Math.max(1, Math.ceil(span / 8));
+      for (let k = 0; k < span; k += step) {
+        const d = new Date(ms(from) + k * DAYMS).toISOString().slice(0, 10);
+        sl.addText(`${+d.slice(5, 7)}/${+d.slice(8)}`, { x: xOf(d) - 0.05, y: TOP - 0.42, w: 0.9, h: 0.3, fontFace: FONT, fontSize: 11, color: '6B6B6B', margin: 0, isTextBox: true });
+        sl.addShape(pres.shapes.LINE, { x: xOf(d), y: TOP - 0.08, w: 0, h: rh * s.items.length + 0.1, line: { color: 'E4E7EC', width: 0.75 }, objectName: '날짜 눈금선' });
+      }
+      s.items.forEach((it, k) => {
+        const y = TOP + k * rh, x0 = xOf(it.start), x1 = TX + ((ms(it.end) - ms(from)) / DAYMS + 1) / span * TW;
+        const fill = it.status === 'done' ? 'B8C0CC' : it.status === 'cancelled' ? 'E4E7EC' : P.accent;
+        sl.addText(`${cut(it.label, 18)}${it.status === 'cancelled' ? ' (취소)' : it.status === 'done' ? ' (완료)' : ''}`, { x: LX, y, w: LW, h: rh, fontFace: FONT, fontSize: rh < 0.4 ? 12 : 14, color: it.status === 'cancelled' ? '98A2B3' : P.ink, valign: 'middle', margin: 0, isTextBox: true });
+        sl.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: x0, y: y + rh * 0.2, w: Math.max(0.12, x1 - x0), h: rh * 0.6, fill: { color: fill }, line: { color: fill }, rectRadius: 0.06, objectName: `일정 막대 ${k + 1}` });
+      });
+      if (s.today && s.today >= from && s.today <= to) {
+        sl.addShape(pres.shapes.LINE, { x: xOf(s.today), y: TOP - 0.1, w: 0, h: rh * s.items.length + 0.15, line: { color: 'F04438', width: 1.5 }, objectName: '오늘 선' });
+        sl.addText('오늘', { x: xOf(s.today) - 0.3, y: TOP + rh * s.items.length + 0.08, w: 0.6, h: 0.28, fontFace: FONT, fontSize: 10, color: 'F04438', align: 'center', margin: 0, isTextBox: true });
+      }
     } else if (s.kind === 'stats') {
       sl = content(s);
       const n = s.stats.length, gap = 0.35, cw = (W - 2 * M - gap * (n - 1)) / n;
