@@ -108,7 +108,7 @@ td{border-bottom:1px solid var(--line);padding:10px 6px}
   <aside class="preview" aria-label="기업에 보이는 모습">
    <div class="hint" style="margin-bottom:8px">기업에 이렇게 보여요</div>
    <div class="namecard" id="card"></div>
-   <div class="stats"><div><span>받은 토큰 잔액</span><b id="bal">0</b></div><div><span>진행 중인 상담</span><b id="act">0</b></div></div>
+   <div class="stats"><div><span>받은 토큰 잔액 <small id="feeNote" style="font-weight:400"></small></span><b id="bal">0</b></div><div><span>진행 중인 상담</span><b id="act">0</b></div></div>
   </aside>
  </div>
 
@@ -138,7 +138,7 @@ async function load(){
  $('login').hidden=true;$('main').hidden=false;
  const p=d.profile;
  $('pName').value=p.name||'';$('pField').value=p.field||'';$('pDesc').value=p.desc||'';$('pCareer').value=p.career||'';$('pHours').value=p.hours||'';$('pRate').value=p.rate||'';$('pRate').max=d.rateMax;$('pAvail').checked=!!p.available;
- $('bal').textContent=(p.balance||0).toLocaleString();$('act').textContent=d.active.length;
+ $('bal').textContent=(p.balance||0).toLocaleString();$('feeNote').textContent=d.feePct?`(운영 기관 몫 ${d.feePct}% 뺀 금액)`:'';$('act').textContent=d.active.length;
  if(!p.rate)$('pMsg').textContent='시간당 토큰을 정하고 저장해야 기업 목록에 보여요.';
  const T={pay:'상담 토큰 받음',payout:'운영자 정산'};
  $('rec').innerHTML=d.received.length?d.received.map(l=>`<tr><td>${when(l.at)}</td><td>${T[l.type]||l.type}</td><td>${esc(l.orgName)}${l.memo?` <span style="color:var(--mute)">“${esc(l.memo)}”</span>`:''}</td><td class="num">${l.minutes?l.minutes+'분':''}</td><td class="num">${l.type==='payout'?'−':'+'}${l.amount.toLocaleString()}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">아직 기록이 없어요.</td></tr>';

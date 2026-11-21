@@ -19,9 +19,12 @@ require(path.join(__dirname, '..', 'server.js'));
 const http = require('http');
 function mk() { let ck = ''; return (p, b) => new Promise(r => { const q = http.request('http://localhost:3997' + p, { method: b ? 'POST' : 'GET', headers: ck ? { cookie: ck } : {} }, res => { const sc = res.headers['set-cookie']; if (sc) ck = sc[0].split(';')[0]; let d = ''; res.on('data', c => d += c); res.on('end', () => { let j; try { j = JSON.parse(d); } catch (e) { j = d; } r({ s: res.statusCode, j }); }); }); if (b) q.write(JSON.stringify(b)); q.end(); }); }
 const sl = ms => new Promise(r => setTimeout(r, ms));
+// 인재 본인이 브라우저로 동의 페이지를 여는 것처럼 (로그인 없음, 폼 전송)
+const page = (u, action) => new Promise(r => { const q = http.request('http://localhost:3997' + u.replace(/^https?:\/\/[^/]*/, ''), { method: action ? 'POST' : 'GET', headers: action ? { 'content-type': 'application/x-www-form-urlencoded' } : {} }, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => r({ s: res.statusCode, body: d, h: res.headers })); }); if (action) q.write('action=' + action); q.end(); });
 (async () => {
   await sl(300);
-  const Ad = mk(); await Ad('/api/admin/login', { password: 'adminpass' });
+  const Ad = mk();
+  await Ad('/api/admin/login', { password: 'adminpass' }); await Ad('/api/admin/fee', { pct: 0 }); // 운영 기관 몫은 fee.test.js
   const U = {}, room = {};
   for (const [n, id] of [['마을빵공방', 'A'], ['꽃가게', 'B'], ['책방', 'C']]) { await Ad('/api/admin/orgs', { name: n, loginId: 'org' + id, password: 'password1' }); U[id] = mk(); }
   for (const o of (await Ad('/api/admin/state')).j.orgs) await Ad(`/api/admin/orgs/${o.id}/charge`, { amount: 50 });
@@ -38,11 +41,20 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   chk('초안 카드 (1토큰), AI에 차별 정보 금지 규칙', card && card.talent.status === 'draft' && card.talent.private.name === '박지은' && await W('A') === 49 && calls[calls.length - 1].system.includes('나이·생년·성별'));
   const id = card.talent.id;
   chk('초안은 아직 목록에 없음', !(await list('B')).items.length);
-  chk('동의 확인 없이는 못 올림', (await U.A('/api/talent/publish', { id, consent: false })).s === 400);
-  chk('다른 기업은 남의 초안을 못 올림', (await U.B('/api/talent/publish', { id, consent: true })).s === 404);
-  chk('고친 내용에 계좌번호 넣으면 거절', (await U.A('/api/talent/publish', { id, consent: true, profile: { title: '디자이너', summary: '계좌번호 123' } })).s === 400);
-  const pub = await U.A('/api/talent/publish', { id, consent: true, profile: { title: '식품 패키지 디자이너 · 3년차', summary: card.talent.profile.summary, skills: '일러스트레이터, 포토샵, 인쇄 감리' }, private: { name: '박지은', contact: '010-1234-5678' } });
-  chk('동의 확인 후 올림 (고친 제목 반영)', pub.s === 200 && pub.j.status === 'open' && pub.j.profile.title === '식품 패키지 디자이너 · 3년차');
+  chk('다른 기업은 남의 초안으로 링크를 못 만듦', (await U.B('/api/talent/consent-link', { id })).s === 404);
+  chk('고친 내용에 계좌번호 넣으면 거절', (await U.A('/api/talent/consent-link', { id, profile: { title: '디자이너', summary: '계좌번호 123' } })).s === 400);
+  const ln = await U.A('/api/talent/consent-link', { id, profile: { title: '식품 패키지 디자이너 · 3년차', summary: card.talent.profile.summary, skills: '일러스트레이터, 포토샵, 인쇄 감리' }, private: { name: '박지은', contact: '010-1234-5678' } });
+  chk('본인 동의 링크 만들기 → 아직 목록엔 없음', ln.s === 200 && ln.j.status === 'awaiting' && /\/c\/[a-f0-9]{32}$/.test(ln.j.consentUrl) && !(await list('B')).items.length);
+  chk('기업방 카드에 동의 링크', (await msgs('A')).filter(m => m.talent).pop().talent.consentUrl === ln.j.consentUrl);
+  const cp = await page(ln.j.consentUrl);
+  chk('동의 페이지: 공개될 내용·고른 기업에 갈 연락처·추천 보상을 그대로 보여 줌', cp.s === 200 && cp.body.includes('박지은님, 인재 추천 동의를') && cp.body.includes('식품 패키지 디자이너') && cp.body.includes('010-1234-5678') && cp.body.includes('추천 보상') && cp.body.includes('동의합니다'));
+  chk('동의 페이지는 스크립트 없이, 검색 노출 안 됨', /default-src 'none'/.test(cp.h['content-security-policy']) && !/script-src/.test(cp.h['content-security-policy']) && cp.h['x-robots-tag'] === 'noindex' && !cp.body.includes('<script'));
+  chk('틀린 링크는 404', (await page('http://x/c/' + 'a'.repeat(32))).s === 404);
+  const ag = await page(ln.j.consentUrl, 'agree');
+  const pub = { j: (await list('A')).items.find(x => x.id === id) };
+  chk('본인이 동의하면 바로 올라감 (고친 제목 반영)', ag.body.includes('인재 추천에 올라갔어요') && pub.j.status === 'open' && pub.j.profile.title === '식품 패키지 디자이너 · 3년차' && pub.j.consentAt);
+  chk('추천 기업에 "본인이 직접 동의" 알림', (await msgs('A')).some(m => m.text.includes('박지은님이 직접 동의해서')));
+  chk('같은 링크로 다시 열면 철회 버튼', (await page(ln.j.consentUrl)).body.includes('동의 철회하기'));
   const lb = (await list('B')).items[0];
   chk('다른 기업 목록: 경력·기술만, 이름·연락처 없음', lb && lb.profile.skills.length === 3 && !lb.private && !JSON.stringify(lb).includes('010-1234') && !JSON.stringify(lb).includes('박지은'));
   chk('추천 기업 목록에는 개인정보 보임', (await list('A')).items[0].private.contact === '010-1234-5678');
@@ -74,8 +86,18 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   // 관리자 숨김
   await U.A(`/api/rooms/${room.A}/messages`, { text: '박지은 다시 추천, 동의 받았어요', to: 'talent' }); await sl(150);
   const id2 = (await msgs('A')).filter(m => m.talent).pop().talent.id;
-  await U.A('/api/talent/publish', { id: id2, consent: true });
+  const ln2 = await U.A('/api/talent/consent-link', { id: id2 }); await page(ln2.j.consentUrl, 'agree');
   await Ad(`/api/admin/talent/${id2}/hide`, { hidden: true, reason: '확인 중' });
   chk('관리자가 숨기면 다른 기업 목록에서 빠지고 못 고름', !(await list('B')).items.some(t => t.id === id2) && (await U.B('/api/talent/pick', { id: id2 })).s === 404);
+  // 본인이 거절 · 철회
+  await U.A(`/api/rooms/${room.A}/messages`, { text: '박지은 또 추천', to: 'talent' }); await sl(150);
+  const id3 = (await msgs('A')).filter(m => m.talent).pop().talent.id, ln3 = await U.A('/api/talent/consent-link', { id: id3 });
+  const dc = await page(ln3.j.consentUrl, 'decline');
+  chk('본인이 거절하면 안 올라가고 개인정보 지움', dc.body.includes('동의하지 않으셨어요') && !(await list('A')).items.some(t => t.id === id3) && (await msgs('A')).some(m => m.text.includes('동의하지 않았어요')) && (await msgs('A')).filter(m => m.talent && m.talent.id === id3).pop().talent.private === null);
+  await Ad(`/api/admin/talent/${id2}/hide`, { hidden: false });
+  await U.B('/api/talent/pick', { id: id2 });
+  const wd = await page(ln2.j.consentUrl, 'withdraw');
+  chk('본인이 철회하면 추천 내리고 개인정보 지움, 고른 기업에 지워 달라고 알림', wd.body.includes('동의를 철회했어요') && !(await list('B')).items.some(t => t.id === id2) && (await msgs('B')).some(m => m.text.includes('동의를 철회했어요') && m.text.includes('지워 주세요')) && (await msgs('A')).some(m => m.text.includes('동의를 철회했어요')));
+  chk('철회한 링크는 더 안 열림', (await page(ln2.j.consentUrl)).s === 404);
   process.exit(FAILS ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

@@ -22,7 +22,7 @@ const OTHER = `당신은 꽃가게 전용 꽃다발 추천 도우미입니다. �
 const D = (name, role, kind = 'chat') => ({ hamkkebot: 1, name, short: name[0], color: '#2D6A4F', tag: '점검', desc: name + ' 설명', hello: '안녕하세요', quick: [], kind, role });
 (async () => {
   await sl(300);
-  const Ad = mk(); await Ad('/api/admin/login', { password: 'adminpass' });
+  const Ad = mk(); await Ad('/api/admin/login', { password: 'adminpass' }); await Ad('/api/admin/fee', { pct: 0 }); // 이 시험은 분배 흐름만 봄 (운영 기관 몫은 fee.test.js)
   const U = {};
   for (const [n, id] of [['마을빵공방', 'A'], ['꽃가게', 'B'], ['책방', 'C'], ['카페', 'E'], ['공방', 'F']]) { await Ad('/api/admin/orgs', { name: n, loginId: 'org' + id, password: 'password1' }); U[id] = mk(); }
   for (const o of (await Ad('/api/admin/state')).j.orgs) await Ad(`/api/admin/orgs/${o.id}/charge`, { amount: 100 });

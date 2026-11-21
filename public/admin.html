@@ -103,6 +103,7 @@ td{border-bottom:1px solid var(--line);padding:10px 6px;vertical-align:middle}
 
  <h2>AI 봇 토큰 사용량</h2>
  <p class="lead" style="margin:-6px 0 14px">요청 한 번에 기업 잔액에서 빠지는 토큰이에요. 0이면 무료. 답을 받지 못하면 빠지지 않아요. 바꾸면 다음 요청부터 적용돼요.</p>
+ <div class="card" id="feeBox" style="margin-bottom:12px"></div>
  <form class="form" id="costForm"><div id="costs" style="display:contents"></div><div><button class="btn">사용량 저장</button></div><div class="msg" id="costMsg" style="grid-column:1/-1"></div></form>
 
  <h2>봇 마켓 심사</h2>
@@ -149,7 +150,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const n=v=>(+v||0).toLocaleString('ko-KR');
 let D=null, es=null;
 const api=async(p,b)=>{const r=await fetch(p,{method:b?'POST':'GET',headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({error:'응답 오류'}));if(r.status===401&&p!=='/api/admin/login'){showLogin();throw new Error('login')}return j};
-const T={charge:'충전',deduct:'차감',pay:'상담 지급',payout:'정산',bot:'봇 사용',refill:'무제한 자동 충전',share:'봇 이용 몫 보냄',share_in:'봇 이용 몫 받음',royalty:'복사 봇 원작 몫 보냄',royalty_in:'복사 봇 원작 몫 받음',talent_pick:'인재 고르기',talent_pick_in:'인재 추천 보상',pass_refund:'이용권 환불 받음',pass_refund_out:'이용권 환불 돌려줌',pass_refund_platform:'이용권 환불 (운영 기관 부담분)',pass:'봇 이용권 구매',pass_in:'봇 이용권 판매'};
+const T={charge:'충전',deduct:'차감',pay:'상담 지급',payout:'정산',bot:'봇 사용',refill:'무제한 자동 충전',share:'봇 이용 몫 보냄',share_in:'봇 이용 몫 받음',royalty:'복사 봇 원작 몫 보냄',royalty_in:'복사 봇 원작 몫 받음',fee:'운영 기관 몫',fee_refund:'운영 기관 몫 환불',talent_pick:'인재 고르기',talent_pick_in:'인재 추천 보상',pass_refund:'이용권 환불 받음',pass_refund_out:'이용권 환불 돌려줌',pass_refund_platform:'이용권 환불 (운영 기관 부담분)',pass:'봇 이용권 구매',pass_in:'봇 이용권 판매'};
 const when=t=>new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
 const say=(el,text,err)=>{el.className='msg'+(err?' err':'');el.textContent=text};
 
@@ -162,7 +163,7 @@ async function load(){
  $('sExpert').textContent=n(D.experts.reduce((a,x)=>a+x.balance,0));
  $('sCount').textContent=`${D.orgs.length} · ${D.experts.length} · ${D.orgs.filter(o=>o.unlimited&&o.unlimited.active).length}`;
  $('tgNote').textContent=D.telegram.enabled?`전문가는 텔레그램에서 @${D.telegram.username} 봇에게 등록코드를 보내 등록하고, /login 으로 프로필 페이지(/expert)에 들어가 시간당 토큰을 직접 정합니다. 단가를 정해야 기업 목록에 보입니다.`:'텔레그램 봇 토큰이 설정되지 않아 사람 전문가를 쓸 수 없어요.';
- renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderClaims();renderCopies();renderBoard();renderTg();renderTalents();
+ renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderClaims();renderCopies();renderBoard();renderTg();renderTalents();renderFee();
 }
 const dstr=t=>new Date(t).toLocaleDateString('ko-KR',{month:'numeric',day:'numeric'});
 const tomorrow=()=>{const d=new Date(Date.now()+864e5+9*36e5);return d.toISOString().slice(0,10)};
@@ -196,6 +197,8 @@ function renderOrgs(){
 const MS={pending:'심사 대기',public:'공개 중',rejected:'거절됨'};
 let BF='wait';
 const wt=t=>new Date(t+9*36e5).toISOString().slice(5,16).replace('T',' ');
+function renderFee(){if(document.activeElement&&document.activeElement.id==='feePct')return;$('feeBox').innerHTML=`<div class="head"><h3>운영 기관 몫</h3><span class="msg">지금까지 ${(D.platformFees||0).toLocaleString()}토큰</span></div><div class="msg">기업·전문가가 받는 모든 소득(봇 이용 몫·원작 몫·이용권·인재 추천 보상·전문가 상담비)에서 떼는 비율이에요. 내는 쪽 금액은 그대로이고, 받는 쪽이 이만큼 덜 받아요.</div><div class="inl"><input class="field" id="feePct" type="number" min="0" max="30" value="${D.feePct}" style="width:90px" aria-label="운영 기관 몫 퍼센트"><span>%</span><button class="btn sm" type="button" id="feeSave">저장</button><span class="msg" id="feeMsg"></span></div>`}
+$('feeBox').addEventListener('click',async e=>{if(e.target.id!=='feeSave')return;const j=await api('/api/admin/fee',{pct:+$('feePct').value});if(j.error)return say($('feeMsg'),j.error,1);say($('feeMsg'),'저장했어요');load()});
 function renderTg(){const T=D.adminTg;
  $('tgAdmin').innerHTML=!D.tgReady?'<div class="msg">TELEGRAM_BOT_TOKEN이 없어 텔레그램으로 받을 수 없어요. 질문은 위 게시판 「답변 대기 Q&amp;A」로 와요.</div>':T?`<div class="msg">연결됨: <b>${esc(T.title||'그룹')}</b> · ${wt(T.linkedAt)} · ${esc(T.by||'')}</div><div class="msg">기업이 오른쪽 아래 질문 버튼으로 물으면 이 방으로 와요. 방에서 누구든 질문에 답장으로 <b>/answer 답변</b> 또는 <b>/answer 번호 답변</b>을 보내면 바로 기업에 전해지고 Q&amp;A 게시판에 등록돼요. <b>/questions</b>로 답을 기다리는 질문을 봐요.</div><div class="inl"><button class="btn ghost sm" type="button" id="tgUnlink">연결 해제</button></div>`:`<div class="msg">관리자들이 있는 텔레그램 그룹에 함께봇 봇을 초대한 뒤, 아래 코드로 연결하세요 (10분 동안 유효).</div><div class="inl"><button class="btn sm" type="button" id="tgCode">연결 코드 만들기</button><span class="msg" id="tgCodeOut"></span></div>`;
 }
@@ -287,7 +290,7 @@ function renderExperts(){
 }
 function renderLedger(){
  const f=$('lf').value, rows=D.ledger.filter(l=>!f||l.orgId===f);
- $('ledger').innerHTML=rows.length?rows.map(l=>`<tr><td>${when(l.at)}</td><td>${esc(l.orgName||'—')}</td><td><span class="tag">${T[l.type]||l.type}</span></td><td>${esc(l.type==='pay'?`${l.roomName||''} → ${l.expertName}${l.minutes?` · ${l.minutes}분${l.suggested?` (계산 ${l.suggested}개)`:''}`:''}`:l.type==='payout'?`${l.expertName} 정산`:l.type==='bot'?`${l.botName}${l.roomName?' · '+l.roomName:''}`:l.type==='talent_pick'?`${l.talentTitle} → ${l.toOrgName}`:l.type==='talent_pick_in'?`${l.talentTitle} ← ${l.fromOrgName}`:l.type==='pass_refund'?`${l.botName} ← ${l.fromOrgName} · ${l.reason}${l.estimated?' (예전 이용권, 지금 가격 기준)':''}`:l.type==='pass_refund_out'?`${l.botName} → ${l.toOrgName} · ${l.reason}`:l.type==='pass_refund_platform'?`${l.botName} · ${l.fromOrgName||'받은 기업'} 잔액 부족분`:l.type==='royalty'?`${l.botName} (원작 ${l.originName}) → ${l.toOrgName}`:l.type==='royalty_in'?`${l.botName} (원작 ${l.originName}) ← ${l.fromOrgName}`:l.type==='share'||l.type==='pass'?`${l.botName} → ${l.toOrgName}`:l.type==='share_in'||l.type==='pass_in'?`${l.botName} ← ${l.fromOrgName}`:'')}${l.memo?` <span style="color:var(--mute)">${esc(l.memo)}</span>`:''}</td><td class="num">${l.type==='charge'||l.type==='refill'||l.type==='share_in'||l.type==='pass_in'||l.type==='royalty_in'||l.type==='pass_refund'||l.type==='talent_pick_in'?'+':l.type==='pass_refund_platform'?'':'−'}${n(l.amount)}</td><td class="num">${l.type==='payout'?'':n(l.walletAfter)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">아직 거래가 없어요.</td></tr>';
+ $('ledger').innerHTML=rows.length?rows.map(l=>`<tr><td>${when(l.at)}</td><td>${esc(l.orgName||'—')}</td><td><span class="tag">${T[l.type]||l.type}</span></td><td>${esc(l.type==='pay'?`${l.roomName||''} → ${l.expertName}${l.minutes?` · ${l.minutes}분${l.suggested?` (계산 ${l.suggested}개)`:''}`:''}`:l.type==='payout'?`${l.expertName} 정산`:l.type==='bot'?`${l.botName}${l.roomName?' · '+l.roomName:''}`:l.type==='fee'?`${l.source==='pay'?`${l.expertName||''} 상담비`:l.botName||l.talentTitle||l.source} ${l.gross}토큰의 몫`:l.type==='fee_refund'?`${l.botName} 이용권 환불분`:l.type==='talent_pick'?`${l.talentTitle} → ${l.toOrgName}`:l.type==='talent_pick_in'?`${l.talentTitle} ← ${l.fromOrgName}`:l.type==='pass_refund'?`${l.botName} ← ${l.fromOrgName} · ${l.reason}${l.estimated?' (예전 이용권, 지금 가격 기준)':''}`:l.type==='pass_refund_out'?`${l.botName} → ${l.toOrgName} · ${l.reason}`:l.type==='pass_refund_platform'?`${l.botName} · ${l.fromOrgName||'받은 기업'} 잔액 부족분`:l.type==='royalty'?`${l.botName} (원작 ${l.originName}) → ${l.toOrgName}`:l.type==='royalty_in'?`${l.botName} (원작 ${l.originName}) ← ${l.fromOrgName}`:l.type==='share'||l.type==='pass'?`${l.botName} → ${l.toOrgName}`:l.type==='share_in'||l.type==='pass_in'?`${l.botName} ← ${l.fromOrgName}`:'')}${l.memo?` <span style="color:var(--mute)">${esc(l.memo)}</span>`:''}</td><td class="num">${l.type==='charge'||l.type==='refill'||l.type==='share_in'||l.type==='pass_in'||l.type==='royalty_in'||l.type==='pass_refund'||l.type==='talent_pick_in'?'+':l.type==='pass_refund_platform'||l.type==='fee'||l.type==='fee_refund'?'':'−'}${n(l.amount)}</td><td class="num">${l.type==='payout'?'':n(l.walletAfter)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">아직 거래가 없어요.</td></tr>';
 }
 // 두 번 눌러야 실행되는 위험 버튼
 const confirm2=(b,label)=>{if(b.dataset.armed)return true;b.dataset.armed=1;const old=b.textContent;b.textContent=label||'한 번 더 누르면 실행';setTimeout(()=>{delete b.dataset.armed;b.textContent=old},4000);return false};

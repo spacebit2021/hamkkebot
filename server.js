@@ -183,6 +183,26 @@ function record(org, entry) {
   return e;
 }
 
+// ---------- 운영 기관 몫: 모든 소득(봇 이용 몫·원작 몫·이용권·인재 추천 보상·전문가 상담비)의 10% ----------
+const feeRate = () => S.feeRate == null ? 0.1 : S.feeRate;
+const feePct = () => Math.round(feeRate() * 100);
+// 1토큰 미만은 받는 쪽마다 모아 두었다가 1토큰이 되면 뗌 (작은 금액도 정확히 10%가 되게)
+function takeFee(key, amount) {
+  S.feeCarry = S.feeCarry || {};
+  const c = (S.feeCarry[key] || 0) + amount * feeRate();
+  const fee = Math.min(amount, Math.floor(c + 1e-9)); S.feeCarry[key] = c - fee;
+  S.platformFees = (S.platformFees || 0) + fee;
+  return { fee, net: amount - fee };
+}
+// 기업이 소득을 받음: 지갑에는 운영 기관 몫을 뺀 만큼, 거래 기록에 받은 것과 운영 기관 몫을 따로
+function creditOrg(org, amount, entry) {
+  const { fee, net } = takeFee('o:' + org.id, amount);
+  org.wallet += net;
+  record(org, { ...entry, amount: net, gross: amount, fee });
+  if (fee) record(org, { type: 'fee', amount: fee, source: entry.type, gross: amount, botName: entry.botName, talentTitle: entry.talentTitle });
+  return { fee, net };
+}
+
 // ---------- 기업 정보 문서 (버전 관리) ----------
 // org.doc = { seq, current, versions: [{ id, n, at, by:{kind,name,id}, note, status:'approved'|'pending'|'rejected', html, basedOn }] }
 function ensureDoc(org) {
@@ -284,11 +304,11 @@ function payShare(fromOrg, c, amount, type, room, to = null) {
   const name = c.def ? c.def.name : '봇', extra = to ? { originName: to.name || '' } : {};
   record(fromOrg, { type, amount, botId: c.id, botName: name, toOrgName: owner.name, roomId: room && room.id, roomName: room && room.name, ...extra });
   afterSpend(fromOrg);
-  owner.wallet += amount;
-  record(owner, { type: type + '_in', amount, botId: c.id, botName: name, fromOrgName: fromOrg.name, ...extra });
+  const { fee, net } = creditOrg(owner, amount, { type: type + '_in', botId: c.id, botName: name, fromOrgName: fromOrg.name, ...extra });
   const st = to ? to.rec : c;
-  if (st) { st.stats = st.stats || { uses: 0, earned: 0, byOrg: {} }; st.stats.earned += amount; }
+  if (st) { st.stats = st.stats || { uses: 0, earned: 0, byOrg: {} }; st.stats.earned += net; }
   save();
+  return { fee, net, ownerId: owner.id };
 }
 // ---------- 무단 복사 찾기 · 원작 기업에 몫 보내기 ----------
 // 기본 봇·공통 규칙·Claude 안내문에 있는 글은 누구나 쓸 수 있으므로 비교에서 뺌
@@ -349,12 +369,15 @@ function refundPasses(c, why) {
       days += Math.ceil(left / 864e5);
       if (amt <= 0) continue;
       total += amt;
-      const recv = orgById(p.paidTo), fromRecv = recv ? Math.max(0, Math.min(recv.wallet, amt)) : 0;
+      // 받은 기업은 실제로 받았던 몫(운영 기관 몫 제외)만큼, 운영 기관은 떼었던 몫만큼 돌려줌
+      const feePart = p.amount ? Math.round(amt * (p.fee || 0) / p.amount) : 0, netPart = amt - feePart;
+      if (feePart) { S.platformFees = (S.platformFees || 0) - feePart; record(buyer, { type: 'fee_refund', amount: feePart, botId: c.id, botName: name, reason: why }); }
+      const recv = orgById(p.paidTo), fromRecv = recv ? Math.max(0, Math.min(recv.wallet, netPart)) : 0;
       if (recv && fromRecv) { recv.wallet -= fromRecv; record(recv, { type: 'pass_refund_out', amount: fromRecv, botId: c.id, botName: name, toOrgName: buyer.name, reason: why }); afterSpend(recv); }
-      if (amt - fromRecv > 0) record(buyer, { type: 'pass_refund_platform', amount: amt - fromRecv, botId: c.id, botName: name, fromOrgName: recv ? recv.name : '', reason: why });
+      if (netPart - fromRecv > 0) record(buyer, { type: 'pass_refund_platform', amount: netPart - fromRecv, botId: c.id, botName: name, fromOrgName: recv ? recv.name : '', reason: why });
       buyer.wallet += amt;
       record(buyer, { type: 'pass_refund', amount: amt, botId: c.id, botName: name, fromOrgName: recv ? recv.name : '운영 기관', reason: why, ...(p.estimated ? { estimated: true } : {}) });
-      if (recv && recv.id !== buyer.id) { const rr = S.rooms.find(r => r.orgId === recv.id); if (rr) addMsg(rr, { from: 'sys', text: `"${name}" 이용권 환불로 ${buyer.name}에 ${fromRecv}토큰을 돌려줬어요 (${why})${amt - fromRecv > 0 ? `. 잔액이 모자란 ${amt - fromRecv}토큰은 운영 기관이 채웠어요` : ''}.` }); }
+      if (recv && recv.id !== buyer.id) { const rr = S.rooms.find(r => r.orgId === recv.id); if (rr) addMsg(rr, { from: 'sys', text: `"${name}" 이용권 환불로 ${buyer.name}에 ${fromRecv}토큰을 돌려줬어요 (${why})${feePart ? ` (운영 기관 몫 ${feePart}토큰은 운영 기관이 돌려줌)` : ''}${netPart - fromRecv > 0 ? `. 잔액이 모자란 ${netPart - fromRecv}토큰은 운영 기관이 채웠어요` : ''}.` }); }
     }
     delete c.passes[buyerId];
     const br = S.rooms.find(r => r.orgId === buyer.id);
@@ -1340,10 +1363,11 @@ const body = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c
 // ---------- 인재 추천 봇 ----------
 // 다른 기업에는 경력·기술만 보여 주고, 이름·연락처는 그 인재를 고른 기업에만. 본인 동의를 확인해야 올라감
 const SENSITIVE_RE = /\d{6}\s*-\s*[1-4]\d{6}|주민\s*(등록)?\s*번호|여권\s*번호|계좌\s*번호/;
+const talentConsentUrl = t => `${baseUrl()}/c/${t.consentToken}`;
 const cleanList = (a, n, len) => (Array.isArray(a) ? a : []).map(v => str(v, len)).filter(Boolean).slice(0, n);
 function talentView(org, t) {
   const picked = t.picks.find(p => p.orgId === org.id), mine = t.orgId === org.id;
-  return { id: t.id, at: t.at, status: t.status, hidden: !!t.hidden, orgName: (orgById(t.orgId) || {}).name || '', mine, profile: t.profile, picks: t.picks.length, picked: !!picked, fee: costOf('talent_pick'), ...(mine || picked ? { private: t.private } : {}), ...(mine ? { earned: t.picks.reduce((a, p) => a + p.amount, 0), pickedBy: t.picks.map(p => (orgById(p.orgId) || {}).name) } : {}) };
+  return { id: t.id, at: t.at, status: t.status, hidden: !!t.hidden, orgName: (orgById(t.orgId) || {}).name || '', mine, profile: t.profile, picks: t.picks.length, picked: !!picked, fee: costOf('talent_pick'), ...(mine || picked ? { private: t.private } : {}), ...(mine ? { earned: t.picks.reduce((a, p) => a + p.amount, 0), pickedBy: t.picks.map(p => (orgById(p.orgId) || {}).name), consentAt: t.consentAt || null, ...(t.status === 'awaiting' ? { consentUrl: talentConsentUrl(t), consentExp: t.consentExp } : {}) } : {}) };
 }
 async function runTalentBot(bot, room, org, text, ctx) {
   if (SENSITIVE_RE.test(text)) return { error: '주민등록번호·여권번호·계좌번호 같은 정보는 받지 않아요. 그 부분을 빼고 다시 보내 주세요.' };
@@ -1363,7 +1387,55 @@ async function runTalentBot(bot, room, org, text, ctx) {
   const priv = { name: str(j.private && j.private.name, 30), contact: str(j.private && j.private.contact, 100) };
   const t = { id: newId('h'), orgId: org.id, by: ctx.author || '기업방', at: Date.now(), status: 'draft', profile, private: priv, consentSaid: !!j.consent, picks: [], roomId: room.id };
   S.talents.push(t); save();
-  return { text: `인재 추천 초안을 만들었어요: ${profile.title}\n아래 카드에서 내용을 확인하고, 본인 동의를 받았으면 "인재 추천에 올리기"를 눌러 주세요. 다른 기업에는 이름·연락처 없이 경력·기술만 보여요.${priv.contact ? '' : '\n(연락 방법이 없어요. 고른 기업이 연락할 수 있게 추천 기업이 직접 이어 주셔야 해요.)'}`, talent: { id: t.id, status: 'draft', profile, private: priv, consentSaid: t.consentSaid }, tgText: `인재 추천 초안 "${profile.title}"을 만들었어요. 웹앱 기업방에서 본인 동의를 확인하고 올려 주세요.` };
+  return { text: `인재 추천 초안을 만들었어요: ${profile.title}\n아래 카드에서 내용을 확인한 뒤 "본인 동의 링크 만들기"를 눌러 그 링크를 추천하는 분께 보내 주세요. 본인이 링크에서 직접 동의하면 인재 추천에 올라가요. 다른 기업에는 이름·연락처 없이 경력·기술만 보여요.${priv.contact ? '' : '\n(연락 방법이 없어요. 고른 기업이 연락할 수 있게 추천 기업이 직접 이어 주셔야 해요.)'}`, talent: { id: t.id, status: 'draft', profile, private: priv, consentSaid: t.consentSaid }, tgText: `인재 추천 초안 "${profile.title}"을 만들었어요. 웹앱 기업방에서 본인 동의 링크를 만들어 추천하는 분께 보내 주세요.` };
+}
+
+function talentCardSync(t) { for (const r of S.rooms.filter(r => r.orgId === t.orgId)) for (const m of r.msgs) if (m.talent && m.talent.id === t.id) { m.talent.status = t.status; m.talent.profile = t.profile; m.talent.private = ['deleted', 'declined', 'withdrawn'].includes(t.status) ? null : t.private; m.talent.consentUrl = t.status === 'awaiting' ? talentConsentUrl(t) : null; } }
+// 인재 본인이 여는 동의 페이지 (로그인 없음, 스크립트 없음)
+function consentPage(t, msg) {
+  const e = DOC.escapeHtml, o = orgById(t.orgId), p = t.profile, fee = costOf('talent_pick');
+  const live = t.status === 'open' || t.status === 'closed', expired = t.status === 'awaiting' && t.consentExp < Date.now();
+  const body = t.status === 'awaiting' && !expired ? `<form method="post"><p class="q">이 내용으로 인재 추천에 올리는 데 동의하시나요?</p><button name="action" value="agree" class="ok">동의합니다</button><button name="action" value="decline" class="no">동의하지 않아요</button></form>`
+    : live ? `<p class="st">동의하셨어요 (${new Date(t.consentAt + 9 * 36e5).toISOString().slice(0, 10)}). 지금 ${t.status === 'open' ? '인재 추천에 올라가 있어요' : '추천이 마감됐어요'} · 고른 기업 ${t.picks.length}곳</p><form method="post"><p class="q">언제든 동의를 거두면 추천이 내려가고 이름·연락처가 지워져요. 이미 연락처를 받은 기업에는 지워 달라고 알려요.</p><button name="action" value="withdraw" class="no">동의 철회하기</button></form>`
+    : expired ? '<p class="st">링크 기간(7일)이 지났어요. 추천한 기업에 새 링크를 요청해 주세요.</p>' : '<p class="st">이 추천은 이제 없어요.</p>';
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>인재 추천 동의 · 함께봇</title>
+<style>body{margin:0;font:16px/1.6 "Malgun Gothic","Noto Sans KR",system-ui,sans-serif;color:#17202b;background:#faf7fb}main{max-width:620px;margin:0 auto;padding:24px 18px 60px}h1{font-size:22px;margin:0 0 6px}h2{font-size:16px;margin:22px 0 6px}
+.card{background:#fff;border:1.5px solid #e7d9e5;border-radius:14px;padding:14px 16px}.mute{color:#667085;font-size:14px}.sk span{display:inline-block;font-size:13px;padding:2px 8px;border-radius:8px;background:#f2eef3;margin:2px}
+.priv{background:#fdf2fa;border-radius:12px;padding:10px 14px}ul{padding-left:20px}button{font:inherit;min-height:48px;border-radius:12px;border:0;padding:0 18px;margin:6px 6px 0 0;font-weight:700;cursor:pointer}.ok{background:#9E3D8F;color:#fff}.no{background:#fff;border:1.5px solid #d0d5dd;color:#17202b}
+.q{font-weight:700;margin:18px 0 4px}.st{background:#ecfdf3;border-radius:12px;padding:10px 14px}.msg{background:#fffaeb;border-radius:12px;padding:10px 14px;margin-bottom:12px}</style></head><body><main>
+${msg ? `<p class="msg">${e(msg)}</p>` : ''}<h1>${e(t.private.name || '')}님, ${t.status === 'awaiting' ? '인재 추천 동의를 부탁드려요' : '인재 추천 동의 내역이에요'}</h1>
+<p class="mute"><b>${e(o ? o.name : '')}</b>이(가) 사회적기업 전문가 플랫폼 "함께봇"의 인재 추천에 ${e(t.private.name || '')}님을 추천하려고 해요. 동의하셔야 올라가요.</p>
+<h2>함께봇의 다른 기업에 보이는 내용</h2><div class="card"><b>${e(p.title)}</b><div class="mute">${[p.field, p.years, p.region, p.workType].filter(Boolean).map(e).join(' · ')}</div>${p.skills.length ? `<div class="sk">${p.skills.map(x => `<span>${e(x)}</span>`).join('')}</div>` : ''}<p style="white-space:pre-wrap;margin:8px 0 0">${e(p.summary)}</p>${p.strengths.length ? `<ul>${p.strengths.map(x => `<li>${e(x)}</li>`).join('')}</ul>` : ''}</div>
+<h2>추천을 보고 연락하겠다고 고른 기업에만 전해지는 내용</h2><div class="priv">이름: ${e(t.private.name || '-')}<br>연락처: ${e(t.private.contact || '(없음 — 추천한 기업이 이어 드려요)')}</div>
+<h2>알아 두실 것</h2><ul><li>나이·성별·건강 같은 정보는 받지 않아요.</li><li>기업이 ${e(t.private.name || '')}님을 고르면, 추천한 ${e(o ? o.name : '')}이(가) 함께봇 토큰 ${fee}개(운영 기관 몫 ${feePct()}% 제외)를 추천 보상으로 받아요.</li><li>이 페이지에서 언제든 동의를 거둘 수 있어요. 이 링크는 다른 사람에게 보내지 마세요.</li></ul>
+${body}</main></body></html>`;
+}
+const CONSENT_HEADERS = { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store', 'x-robots-tag': 'noindex', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" };
+async function handleConsent(req, res, token) {
+  const t = S.talents.find(x => x.consentToken && x.consentToken === token);
+  if (!t) { res.writeHead(404, CONSENT_HEADERS); return res.end('<!DOCTYPE html><meta charset="utf-8"><title>없는 링크</title><p style="font-family:sans-serif;padding:40px">없는 링크이거나 이미 처리된 추천이에요.</p>'); }
+  let msg = '';
+  if (req.method === 'POST') {
+    const raw = await new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e4) req.destroy(); }); req.on('end', () => ok(d)); });
+    const action = new URLSearchParams(raw).get('action'), rr = S.rooms.find(r => r.id === t.roomId) || S.rooms.find(r => r.orgId === t.orgId);
+    if (action === 'agree' && t.status === 'awaiting' && t.consentExp >= Date.now()) {
+      t.status = 'open'; t.consentAt = Date.now(); t.consentBy = '본인'; t.at = Date.now(); msg = '동의해 주셔서 고마워요. 인재 추천에 올라갔어요.';
+      if (rr) addMsg(rr, { from: 'sys', text: `${t.private.name}님이 직접 동의해서 "${t.profile.title}"이(가) 인재 추천에 올라갔어요. 다른 기업이 고르면 ${costOf('talent_pick')}토큰(운영 기관 몫 ${feePct()}% 제외)을 받아요.` });
+    } else if (action === 'decline' && t.status === 'awaiting') {
+      t.status = 'declined'; t.private = { name: '', contact: '' }; msg = '동의하지 않으셨어요. 추천은 올라가지 않고, 이름·연락처를 지웠어요.';
+      if (rr) addMsg(rr, { from: 'sys', text: `추천하려던 분이 "${t.profile.title}" 인재 추천에 동의하지 않았어요. 올리지 않고 이름·연락처를 지웠어요.` });
+      S.talents = S.talents.filter(x => x !== t);
+    } else if (action === 'withdraw' && (t.status === 'open' || t.status === 'closed')) {
+      const name = t.private.name;
+      for (const pk of t.picks) notifyOrg(pk.orgId, `"${t.profile.title}" 인재(${name}님)가 인재 추천 동의를 철회했어요. 받으신 이름·연락처는 지워 주세요.`);
+      t.status = 'withdrawn'; t.private = { name: '', contact: '' }; msg = '동의를 철회했어요. 추천을 내리고 이름·연락처를 지웠어요. 연락처를 받은 기업에도 지워 달라고 알렸어요.';
+      if (rr) addMsg(rr, { from: 'sys', text: `${name}님이 "${t.profile.title}" 인재 추천 동의를 철회했어요. 추천을 내리고 이름·연락처를 지웠어요.` });
+      S.talents = S.talents.filter(x => x !== t);
+    } else msg = '처리할 수 없는 요청이에요.';
+    talentCardSync(t); save(); emit('board', { board: 'talent' }, '*');
+  }
+  res.writeHead(200, CONSENT_HEADERS);
+  return res.end(consentPage(t, msg));
 }
 
 // ---------- 질문 버튼 → 관리자 텔레그램 답변 단톡 → /answer → Q&A 게시판 ----------
@@ -1458,6 +1530,7 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
+    feePct: feePct(), platformFees: S.platformFees || 0,
     adminTg: S.adminTg ? { title: S.adminTg.title, linkedAt: S.adminTg.linkedAt, by: S.adminTg.by } : null, tgReady: !!TG_TOKEN,
     talents: S.talents.filter(t => t.status !== 'draft').sort((a, b) => b.at - a.at).slice(0, 100).map(t => ({ id: t.id, at: t.at, status: t.status, hidden: !!t.hidden, orgName: (orgById(t.orgId) || {}).name, profile: t.profile, consentBy: t.consentBy, picks: t.picks.map(p => ({ orgName: (orgById(p.orgId) || {}).name, at: p.at, amount: p.amount })) })),
     posts: S.posts.slice().sort((a, b) => b.at - a.at).slice(0, 200).map(x => ({ ...postView(null, x, true), hideReason: x.hideReason || '', canReply: true })),
@@ -1545,6 +1618,7 @@ async function adminApi(req, res, p, sess) {
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
   }
+  if (p === '/api/admin/fee') { const v = Number(b.pct); if (!Number.isInteger(v) || v < 0 || v > 30) return BAD(res, '운영 기관 몫은 0~30% 사이 정수로 정해 주세요'); S.feeRate = v / 100; save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
   if (p === '/api/admin/tg-admin/code') { S.adminLink = { code: crypto.randomBytes(4).toString('hex').toUpperCase(), exp: Date.now() + 10 * 6e4 }; save(); return json(res, 200, { code: S.adminLink.code, bot: tgUsername || null }); }
   if (p === '/api/admin/tg-admin/unlink') { if (S.adminTg) tgSend(S.adminTg.chatId, '관리자 답변 방 연결을 해제했어요.'); S.adminTg = null; save(); return json(res, 200, { ok: true }); }
   const hm = p.match(/^\/api\/admin\/talent\/(\w+)\/(hide|delete)$/);
@@ -1687,7 +1761,7 @@ async function expertApi(req, res, p, sess) {
   if (!ex) return BAD(res, '로그인이 필요해요', 401);
   if (p === '/api/expert/logout') { delete S.sessions[sess.token]; save(); return json(res, 200, { ok: true }, { 'set-cookie': cookie('', 0) }); }
   if (p === '/api/expert/state') return json(res, 200, {
-    profile: expertProfile(ex),
+    profile: expertProfile(ex), feePct: feePct(),
     active: roomsOfExpert(ex).map(r => ({ label: roomLabel(r), since: ((r.consults || {})[ex.id] || {}).startAt })),
     received: S.ledger.filter(l => l.expertId === ex.id).slice(-100).reverse().map(l => ({ at: l.at, type: l.type, amount: l.amount, orgName: l.type === 'pay' ? l.orgName : '', minutes: l.minutes, memo: l.memo })),
     rateMax: RATE_MAX
@@ -1740,6 +1814,7 @@ async function userApi(req, res, p, sess) {
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
       sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null,
+      feePct: feePct(),
       boardUnread: S.posts.filter(x => x.orgId === org.id && x.unreadAnswer).length,
       todo: org.todo || todoRooms(org).length ? (() => { const td = ensureTodo(org), t = todayKst(), nx = TODO.upcoming(td, t); return { url: todoUrl(org), editUrl: todoEditUrl(org), v: td.v, next: nx, left: SCHED.diffDays(t, nx), days: td.cycle.days, count: td.items.filter(x => x.status === 'active').length }; })() : null
     });
@@ -1756,22 +1831,24 @@ async function userApi(req, res, p, sess) {
     if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
     const b = await body(req), t = S.talents.find(x => x.id === b.id);
     if (!t) return BAD(res, '없는 추천이에요', 404);
-    const card = () => { for (const r of S.rooms.filter(r => r.orgId === t.orgId)) for (const m of r.msgs) if (m.talent && m.talent.id === t.id) { m.talent.status = t.status; m.talent.profile = t.profile; m.talent.private = t.status === 'deleted' ? null : t.private; } };
-    if (p === '/api/talent/publish') {
-      if (t.orgId !== org.id || t.status !== 'draft') return BAD(res, '올릴 수 있는 초안이 아니에요', 404);
-      if (b.consent !== true) return BAD(res, '추천하는 분에게 인재 추천에 올려도 된다는 동의를 받았는지 확인해 주세요');
-      if (b.profile) { // 기업이 카드에서 고친 내용
-        const pf = b.profile; t.profile = { ...t.profile, title: str(pf.title, 50) || t.profile.title, summary: str(pf.summary, 400) || t.profile.summary, skills: pf.skills ? cleanList(String(pf.skills).split(/[,·]/), 8, 30) : t.profile.skills };
+    const card = () => talentCardSync(t);
+    if (p === '/api/talent/consent-link') {
+      // 인재 본인이 직접 동의해야 올라감: 추천 기업은 내용을 정한 뒤 동의 링크를 인재에게 보냄
+      if (t.orgId !== org.id || !['draft', 'awaiting'].includes(t.status)) return BAD(res, '동의 링크를 만들 수 있는 초안이 아니에요', 404);
+      if (b.profile) {
+        const pf = b.profile; t.profile = { ...t.profile, title: str(pf.title, 50) || t.profile.title, summary: str(pf.summary, 400) || t.profile.summary, skills: pf.skills != null ? cleanList(String(pf.skills).split(/[,·]/), 8, 30) : t.profile.skills };
         if (b.private) t.private = { name: str(b.private.name, 30), contact: str(b.private.contact, 100) };
         if (SENSITIVE_RE.test(JSON.stringify([t.profile, t.private]))) return BAD(res, '주민등록번호·계좌번호 같은 정보는 넣을 수 없어요');
       }
-      t.status = 'open'; t.consentBy = user.name; t.consentAt = Date.now(); t.at = Date.now(); card(); save(); emit('board', { board: 'talent' }, '*');
-      const rr = S.rooms.find(r => r.id === t.roomId); if (rr) addMsg(rr, { from: 'sys', text: `${user.name}님이 본인 동의를 확인하고 "${t.profile.title}"을(를) 인재 추천에 올렸어요. 다른 기업이 고르면 ${costOf('talent_pick')}토큰을 받아요.` });
-      return json(res, 200, talentView(org, t));
+      if (!t.private.name) return BAD(res, '인재 이름을 적어 주세요 (동의 화면에 보여 드려요)');
+      t.status = 'awaiting'; t.consentToken = crypto.randomBytes(16).toString('hex'); t.consentExp = Date.now() + 7 * 864e5; t.linkBy = user.name;
+      card(); save(); emit('board', { board: 'talent' }, '*');
+      return json(res, 200, { ...talentView(org, t), consentUrl: talentConsentUrl(t) });
     }
     if (p === '/api/talent/discard' || p === '/api/talent/close' || p === '/api/talent/delete') {
       if (t.orgId !== org.id) return BAD(res, '우리 기업이 추천한 인재가 아니에요', 403);
       if (p === '/api/talent/close') { if (t.status !== 'open') return BAD(res, '올라가 있는 추천이 아니에요'); t.status = 'closed'; }
+      else if (p === '/api/talent/discard' && !['draft', 'awaiting', 'declined'].includes(t.status)) return BAD(res, '초안만 버릴 수 있어요. 올라간 추천은 지우기를 써 주세요');
       else { S.talents = S.talents.filter(x => x !== t); t.status = 'deleted'; t.private = { name: '', contact: '' }; } // 지우면 개인정보도 지움
       card(); save(); emit('board', { board: 'talent' }, '*'); return json(res, 200, { ok: true });
     }
@@ -1781,12 +1858,13 @@ async function userApi(req, res, p, sess) {
       if (t.picks.some(x => x.orgId === org.id)) return BAD(res, '이미 고른 인재예요');
       const fee = costOf('talent_pick'), rec = orgById(t.orgId);
       if (!reserveTokens(org, fee)) return BAD(res, `인재를 고르려면 ${fee}토큰이 필요해요. 잔액(${org.wallet}토큰)이 부족해요.`);
-      t.picks.push({ orgId: org.id, at: Date.now(), amount: rec ? fee : 0, by: user.name });
+      let got = { net: 0, fee: 0 };
       if (fee > 0) {
         record(org, { type: 'talent_pick', amount: fee, talentId: t.id, talentTitle: t.profile.title, toOrgName: rec ? rec.name : '' }); afterSpend(org);
-        if (rec) { rec.wallet += fee; record(rec, { type: 'talent_pick_in', amount: fee, talentId: t.id, talentTitle: t.profile.title, fromOrgName: org.name }); }
+        if (rec) got = creditOrg(rec, fee, { type: 'talent_pick_in', talentId: t.id, talentTitle: t.profile.title, fromOrgName: org.name });
       }
-      if (rec) notifyOrg(rec.id, `${org.name}이(가) 우리가 추천한 "${t.profile.title}"을(를) 골랐어요. ${fee}토큰을 받았어요. 연락처를 받은 ${org.name}이(가) 직접 연락할 거예요 — 추천한 분께도 알려 주세요.`);
+      t.picks.push({ orgId: org.id, at: Date.now(), amount: got.net, fee: got.fee, by: user.name });
+      if (rec) notifyOrg(rec.id, `${org.name}이(가) 우리가 추천한 "${t.profile.title}"을(를) 골랐어요. ${got.net}토큰을 받았어요${got.fee ? ` (${fee}토큰 중 운영 기관 몫 ${got.fee} 제외)` : ''}. 연락처를 받은 ${org.name}이(가) 직접 연락할 거예요 — 추천한 분께도 알려 주세요.`);
       notifyOrg(org.id, `"${t.profile.title}" 인재를 골랐어요 (${fee}토큰). 이름·연락처: ${t.private.name || '-'} · ${t.private.contact || '추천 기업에 문의'} (추천: ${rec ? rec.name : '-'})`);
       save(); emit('board', { board: 'talent' }, '*');
       return json(res, 200, talentView(org, t));
@@ -1990,8 +2068,8 @@ async function userApi(req, res, p, sess) {
       const o = originOf(c), to = o && orgById(o.orgId) && o.orgId !== org.id ? o : null;
       // 환불할 때 누가 얼마를 받았는지 알 수 있게 구매마다 기록
       c.passLog = c.passLog || [];
-      c.passLog.push({ orgId: org.id, paidTo: to ? to.orgId : c.orgId, amount: pr.passPrice, start, until, at: Date.now() });
-      payShare(org, c, pr.passPrice, 'pass', null, to);
+      const pay = payShare(org, c, pr.passPrice, 'pass', null, to) || { fee: 0 };
+      c.passLog.push({ orgId: org.id, paidTo: to ? to.orgId : c.orgId, amount: pr.passPrice, fee: pay.fee, start, until, at: Date.now() });
       emit('room', {}, org.id);
       return json(res, 200, { ok: true, until: c.passes[org.id] });
     }
@@ -2251,12 +2329,14 @@ async function userApi(req, res, p, sess) {
     const amt = toAmount(b.amount); if (!amt) return BAD(res, '1 이상의 정수로 입력해 주세요');
     ensureFunds(org, amt);
     if (amt > org.wallet) return BAD(res, `잔액이 부족해요 (현재 ${org.wallet}개). 관리자에게 충전을 요청해 주세요.`);
-    org.wallet -= amt; ex.balance += amt; src.pay.paid = amt;
+    const ef = takeFee('e:' + ex.id, amt);
+    org.wallet -= amt; ex.balance += ef.net; src.pay.paid = amt;
     const memo = str(b.memo, 200);
-    record(org, { type: 'pay', amount: amt, expertId: ex.id, expertName: ex.name, expertAfter: ex.balance, roomId: room.id, roomName: room.name, memo, minutes: src.pay.minutes, rate: src.pay.rate, suggested: src.pay.suggested });
+    if (ef.fee) record(org, { type: 'fee', amount: ef.fee, source: 'pay', gross: amt, expertName: ex.name });
+    record(org, { type: 'pay', amount: amt, expertNet: ef.net, fee: ef.fee, expertId: ex.id, expertName: ex.name, expertAfter: ex.balance, roomId: room.id, roomName: room.name, memo, minutes: src.pay.minutes, rate: src.pay.rate, suggested: src.pay.suggested });
     afterSpend(org);
     addMsg(room, { from: 'sys', text: `${ex.name} 전문가에게 상담 토큰 ${amt}개를 보냈어요 (남은 잔액 ${org.wallet}개)` });
-    if (ex.tgChatId) dmExpert(ex, room, `상담 토큰 ${amt}개를 받았어요.${memo ? '\n메시지: ' + memo : ''}\n현재 잔액: ${ex.balance}개`);
+    if (ex.tgChatId) dmExpert(ex, room, `상담 토큰 ${ef.net}개를 받았어요${ef.fee ? ` (기업이 보낸 ${amt}개 중 운영 기관 몫 ${ef.fee}개 제외)` : ''}.${memo ? '\n메시지: ' + memo : ''}\n현재 잔액: ${ex.balance}개`);
     return json(res, 200, { ok: true, wallet: org.wallet });
   }
   if (act === 'call' || act === 'end' || act === 'review') {
@@ -2361,6 +2441,9 @@ http.createServer(async (req, res) => {
     res.writeHead(200, { ...SITE_HEADERS, 'cache-control': 'no-store', 'x-robots-tag': 'noindex' });
     return res.end(SCHED.renderGantt(org, org.sched));
   }
+  // 인재 본인 동의 페이지
+  const cn = p.match(/^\/c\/([a-f0-9]{32})\/?$/);
+  if (cn) return handleConsent(req, res, cn[1]);
   // 할 일표 (보기 링크) · 할 일표 고치기 (편집 링크)
   const tm = p.match(/^\/t\/([a-f0-9]{24})\/?$/);
   if (tm) {

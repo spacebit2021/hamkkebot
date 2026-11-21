@@ -27,7 +27,7 @@ function mk() { let ck = ''; return (p, b) => new Promise(r => { const q = http.
 const Ad = mk(), A = mk(), B = mk(), C = mk(), sl = ms => new Promise(r => setTimeout(r, ms));
 (async () => {
   await sl(300);
-  await Ad('/api/admin/login', { password: 'adminpass' });
+  await Ad('/api/admin/login', { password: 'adminpass' }); await Ad('/api/admin/fee', { pct: 0 }); // 이 시험은 분배 흐름만 봄 (운영 기관 몫은 fee.test.js)
   for (const [n, id] of [['마을빵공방', 'bread'], ['꽃가게', 'flower'], ['책방', 'books']]) await Ad('/api/admin/orgs', { name: n, loginId: id, password: 'password1' });
   const orgs = (await Ad('/api/admin/state')).j.orgs, oid = n => orgs.find(o => o.name === n).id;
   for (const n of ['마을빵공방', '꽃가게', '책방']) await Ad(`/api/admin/orgs/${oid(n)}/charge`, { amount: 50 });
