@@ -72,7 +72,8 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   chk('환전 신청 → 토큰 바로 잡힘', b1.s === 202 && (await st('A')).wallet === w0 - 15 && (await st('A')).exchangeable === 5);
   await sl(300);
   chk('환전 거래 확정', (await api(K, 'GET', '/chain/v1/tx/' + b1.j.hash)).j.status === 'confirmed');
-  chk('주소별 거래 목록', (await api(K, 'GET', `/chain/v1/accounts/${addr}/txs`)).j.txs.length === 2);
+  const txl = (await api(K, 'GET', `/chain/v1/accounts/${addr}/txs`)).j.txs;
+  chk('주소별 거래 목록 (충전·환전 + 서버 안의 이동)', txl.some(x => x.hash === m1.j.hash) && txl.some(x => x.hash === b1.j.hash) && txl.some(x => x.type === 'transfer'));
   // 쓸 땐 번 토큰이 아닌 것부터: 지갑이 번 토큰보다 적어지면 환전 가능도 줄어듦
   const oA = (await Ad('/api/admin/state')).j.orgs.find(o => o.name === '마을빵공방').id;
   await Ad(`/api/admin/orgs/${oA}/deduct`, { amount: (await st('A')).wallet - 3 });
@@ -131,5 +132,8 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   ha = (await PA('/home')).j;
   chk('송금 완료 표시', ha.includes('송금 완료') && ha.includes('반려'));
   chk('다른 기업 거래는 못 봄', (await P('/tx/' + ex1.h.location.slice(4))).s === 403);
+  await sl(300);
+  const sup = (await Ad('/api/admin/state')).j.chain.supply;
+  chk('끝까지 발행량 = 모든 지갑 잔액의 합', sup.ok && sup.supply === sup.held);
   process.exit(FAILS ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

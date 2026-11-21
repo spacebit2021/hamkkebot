@@ -88,14 +88,15 @@ function ensureFunds(org, need = 1) {
   if (!unlimitedActive(org) || (org.wallet >= need && org.wallet > 0)) return false;
   const u = org.unlimited, target = Math.max(u.refillTo, need), add = target - org.wallet;
   if (add <= 0) return false;
-  org.wallet = target; u.refills = (u.refills || 0) + 1; u.total = (u.total || 0) + add;
+  ledger.mintNow(org.id, add, 'refill', '무제한(기간제) 자동 충전'); u.refills = (u.refills || 0) + 1; u.total = (u.total || 0) + add;
   S.ledger.push({ id: newId('t'), at: Date.now(), orgId: org.id, orgName: org.name, type: 'refill', amount: add, memo: '무제한(기간제) 자동 충전', walletAfter: org.wallet });
   save(); emit('room', {}, org.id);
   return true;
 }
 const afterSpend = org => { if (org.wallet <= 0) ensureFunds(org, 1); }; // 다 쓰면 다시 채움
-function reserveTokens(org, n) { if (n <= 0) return true; ensureFunds(org, n); if (org.wallet < n) return false; org.wallet -= n; save(); return true; }
-function refundTokens(org, n) { if (n > 0) { org.wallet += n; save(); emit('room', {}, org.id); } }
+// 쓰는 토큰은 먼저 운영 기관 지갑으로 옮겨 두고(보관), 실패하면 돌려주고, 나눌 몫은 거기서 받는 쪽으로 보냄
+function reserveTokens(org, n) { if (n <= 0) return true; ensureFunds(org, n); if (org.wallet < n) return false; ledger.transfer(org.id, 'platform', n, 'reserve'); save(); return true; }
+function refundTokens(org, n) { if (n > 0) { fromPlatform(org.id, n, 'refund'); save(); emit('room', {}, org.id); } }
 function chargeRecord(org, n, info) { if (n > 0) { record(org, { type: 'bot', amount: n, ...info }); afterSpend(org); } }   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
 for (const e of S.experts) {
   if (typeof e.balance !== 'number') e.balance = 0;
@@ -197,12 +198,13 @@ function takeFee(key, amount) {
   const c = (S.feeCarry[key] || 0) + amount * feeRate();
   const fee = Math.min(amount, Math.floor(c + 1e-9)); S.feeCarry[key] = c - fee;
   S.platformFees = (S.platformFees || 0) + fee;
+  if (S.platform) S.platform.exchangeable = (S.platform.exchangeable || 0) + fee; // 운영 기관이 환전할 수 있는 것은 이 몫
   return { fee, net: amount - fee };
 }
 // 기업이 소득을 받음: 지갑에는 운영 기관 몫을 뺀 만큼, 거래 기록에 받은 것과 운영 기관 몫을 따로
 function creditOrg(org, amount, entry) {
   const { fee, net } = takeFee('o:' + org.id, amount);
-  org.wallet += net; org.exchangeable = (org.exchangeable || 0) + net; // 다른 기업에게서 번 토큰만 환전 가능
+  fromPlatform(org.id, net, entry.type); org.exchangeable = (org.exchangeable || 0) + net; // 다른 기업에게서 번 토큰만 환전 가능 (운영 기관 몫은 운영 기관 지갑에 남음)
   record(org, { ...entry, amount: net, gross: amount, fee });
   if (fee) record(org, { type: 'fee', amount: fee, source: entry.type, gross: amount, botName: entry.botName, talentTitle: entry.talentTitle });
   return { fee, net };
@@ -376,11 +378,11 @@ function refundPasses(c, why) {
       total += amt;
       // 받은 기업은 실제로 받았던 몫(운영 기관 몫 제외)만큼, 운영 기관은 떼었던 몫만큼 돌려줌
       const feePart = p.amount ? Math.round(amt * (p.fee || 0) / p.amount) : 0, netPart = amt - feePart;
-      if (feePart) { S.platformFees = (S.platformFees || 0) - feePart; record(buyer, { type: 'fee_refund', amount: feePart, botId: c.id, botName: name, reason: why }); }
+      if (feePart) { S.platformFees = (S.platformFees || 0) - feePart; S.platform.exchangeable = Math.max(0, (S.platform.exchangeable || 0) - feePart); record(buyer, { type: 'fee_refund', amount: feePart, botId: c.id, botName: name, reason: why }); }
       const recv = orgById(p.paidTo), fromRecv = recv ? Math.max(0, Math.min(recv.wallet, netPart)) : 0;
-      if (recv && fromRecv) { recv.wallet -= fromRecv; record(recv, { type: 'pass_refund_out', amount: fromRecv, botId: c.id, botName: name, toOrgName: buyer.name, reason: why }); afterSpend(recv); }
+      if (recv && fromRecv) { ledger.transfer(recv.id, buyer.id, fromRecv, 'pass_refund'); record(recv, { type: 'pass_refund_out', amount: fromRecv, botId: c.id, botName: name, toOrgName: buyer.name, reason: why }); afterSpend(recv); }
       if (netPart - fromRecv > 0) record(buyer, { type: 'pass_refund_platform', amount: netPart - fromRecv, botId: c.id, botName: name, fromOrgName: recv ? recv.name : '', reason: why });
-      buyer.wallet += amt;
+      fromPlatform(buyer.id, amt - fromRecv, 'pass_refund'); // 운영 기관 몫 + 받은 기업이 모자란 만큼
       record(buyer, { type: 'pass_refund', amount: amt, botId: c.id, botName: name, fromOrgName: recv ? recv.name : '운영 기관', reason: why, ...(p.estimated ? { estimated: true } : {}) });
       if (recv && recv.id !== buyer.id) { const rr = S.rooms.find(r => r.orgId === recv.id); if (rr) addMsg(rr, { from: 'sys', text: `"${name}" 이용권 환불로 ${buyer.name}에 ${fromRecv}토큰을 돌려줬어요 (${why})${feePart ? ` (운영 기관 몫 ${feePart}토큰은 운영 기관이 돌려줌)` : ''}${netPart - fromRecv > 0 ? `. 잔액이 모자란 ${netPart - fromRecv}토큰은 운영 기관이 채웠어요` : ''}.` }); }
     }
@@ -1608,7 +1610,7 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
-    chain: { ...ledger.info(), portalUrl: CHARGE_PORTAL_URL, clients: S.apiClients.map(c => ({ id: c.id, name: c.name, keyId: c.keyId, scopes: c.scopes, mintLimit: c.mintLimit, createdAt: c.createdAt, revokedAt: c.revokedAt, lastUsedAt: c.lastUsedAt })), txs: S.chain.txs.slice(-50).reverse().map(t => ({ ...ledger.getTx(t.hash), orgName: (orgById(ledger.accountOf(t.address)) || {}).name, clientName: (S.apiClients.find(c => c.id === t.clientId) || {}).name })) },
+    chain: { ...ledger.info(), supply: ledger.supply(), treasury: { address: ledger.addressOf('platform'), wallet: S.platform.wallet, exchangeable: Math.max(0, Math.min(S.platform.exchangeable || 0, S.platform.wallet)) }, portalUrl: CHARGE_PORTAL_URL, clients: S.apiClients.map(c => ({ id: c.id, name: c.name, keyId: c.keyId, scopes: c.scopes, mintLimit: c.mintLimit, createdAt: c.createdAt, revokedAt: c.revokedAt, lastUsedAt: c.lastUsedAt })), txs: S.chain.txs.slice(-50).reverse().map(t => ({ ...ledger.getTx(t.hash), orgName: acctLabel(t.address), fromName: t.from ? acctLabel(t.from) : '', clientName: (S.apiClients.find(c => c.id === t.clientId) || {}).name })) },
     feePct: feePct(), platformFees: S.platformFees || 0, feeHistory: (S.feeHistory || []).slice(-10).reverse(),
     adminTg: S.adminTg ? { title: S.adminTg.title, linkedAt: S.adminTg.linkedAt, by: S.adminTg.by } : null, tgReady: !!TG_TOKEN,
     bposts: S.bposts.slice().sort((a, b) => b.at - a.at).slice(0, 200).map(x => ({ ...bpostView(null, x), ...((boardOf(x.botId) || {}).visibility === 'own' ? { values: {}, internal: true } : {}), boardName: (boardOf(x.botId) || {}).name || '(없어진 게시판)', botName: (botById(x.botId) || {}).name || '', visibility: (boardOf(x.botId) || {}).visibility, fields: (boardOf(x.botId) || { fields: [] }).fields })),
@@ -1681,12 +1683,13 @@ async function adminApi(req, res, p, sess) {
       for (const t in S.sessions) if (userIds.has(S.sessions[t].userId)) delete S.sessions[t];
       S.users = S.users.filter(u => u.orgId !== org.id);
       S.rooms = S.rooms.filter(r => r.orgId !== org.id);
+      if (org.wallet > 0) ledger.burnNow(org.id, org.wallet, 'org_delete', '기업 삭제로 남은 토큰 소각');
       S.orgs = S.orgs.filter(o => o !== org); save(); emit('room', {}, org.id);
       return json(res, 200, { ok: true });
     }
     const amt = toAmount(b.amount); if (!amt) return BAD(res, '1 이상의 정수로 입력해 주세요');
     if (m[2] === 'deduct' && amt > org.wallet) return BAD(res, `잔액(${org.wallet}개)보다 많이 차감할 수 없어요`);
-    org.wallet += m[2] === 'charge' ? amt : -amt;
+    if (m[2] === 'charge') ledger.mintNow(org.id, amt, 'admin_charge', str(b.memo, 100)); else ledger.burnNow(org.id, amt, 'admin_deduct', str(b.memo, 100));
     record(org, { type: m[2], amount: amt, memo: str(b.memo, 100) });
     return json(res, 200, { ok: true, wallet: org.wallet });
   }
@@ -1710,7 +1713,7 @@ async function adminApi(req, res, p, sess) {
     return json(res, 200, { ok: true, pct: v });
   }
   if (p === '/api/admin/chain/clients') {
-    const scopes = ['read', 'session', 'mint', 'burn'].filter(x => (Array.isArray(b.scopes) ? b.scopes : ['read', 'session', 'mint', 'burn']).includes(x));
+    const scopes = ['read', 'session', 'mint', 'burn', 'treasury'].filter(x => (Array.isArray(b.scopes) ? b.scopes : ['read', 'session', 'mint', 'burn', 'treasury']).includes(x));
     const lim = Number(b.mintLimit == null ? 100000 : b.mintLimit); if (!Number.isInteger(lim) || lim < 0 || lim > 1e8) return BAD(res, '하루 충전 한도는 0 이상 정수로 정해 주세요');
     const c = { id: newId('k'), name: str(b.name, 40) || '충전·환전 페이지', keyId: 'hbk_' + crypto.randomBytes(8).toString('hex'), secret: crypto.randomBytes(32).toString('hex'), scopes, mintLimit: lim, createdAt: Date.now(), revokedAt: null, lastUsedAt: null };
     S.apiClients.push(c); save();
@@ -1838,6 +1841,7 @@ async function adminApi(req, res, p, sess) {
     if (ex.balance > 0) return BAD(res, `받은 토큰 ${ex.balance}개를 먼저 정산해 주세요`);
     if (roomsOfExpert(ex).length) return BAD(res, '진행 중인 상담이 있어요');
     for (const r of S.rooms) if (r.pending) r.pending = r.pending.filter(q => q.expertId !== ex.id);
+    if (ex.balance > 0) ledger.burnNow('exp:' + ex.id, ex.balance, 'expert_delete', '전문가 삭제로 남은 토큰 소각');
     S.experts = S.experts.filter(e => e !== ex); save(); emit('room', {}, '*');
     return json(res, 200, { ok: true });
   }
@@ -1845,7 +1849,7 @@ async function adminApi(req, res, p, sess) {
     const ex = expertById(b.expertId); if (!ex) return BAD(res, '없는 전문가예요', 404);
     const amt = toAmount(b.amount); if (!amt) return BAD(res, '1 이상의 정수로 입력해 주세요');
     if (amt > ex.balance) return BAD(res, `전문가 잔액(${ex.balance}개)보다 많이 정산할 수 없어요`);
-    ex.balance -= amt;
+    ledger.burnNow('exp:' + ex.id, amt, 'expert_payout', str(b.memo, 100));
     S.ledger.push({ id: newId('t'), at: Date.now(), type: 'payout', amount: amt, expertId: ex.id, expertName: ex.name, expertAfter: ex.balance, memo: str(b.memo, 100) });
     save(); emit('room', {}, '*');
     if (ex.tgChatId) tgSend(ex.tgChatId, `운영자가 상담 토큰 ${amt}개를 정산 처리했어요. 남은 잔액: ${ex.balance}개`);
@@ -2495,7 +2499,7 @@ async function userApi(req, res, p, sess) {
     ensureFunds(org, amt);
     if (amt > org.wallet) return BAD(res, `잔액이 부족해요 (현재 ${org.wallet}개). 관리자에게 충전을 요청해 주세요.`);
     const ef = takeFee('e:' + ex.id, amt);
-    org.wallet -= amt; ex.balance += ef.net; src.pay.paid = amt;
+    ledger.transfer(org.id, 'platform', amt, 'expert_pay'); fromPlatform('exp:' + ex.id, ef.net, 'expert_pay'); src.pay.paid = amt; // 운영 기관 몫은 운영 기관 지갑에 남음
     const memo = str(b.memo, 200);
     if (ef.fee) record(org, { type: 'fee', amount: ef.fee, source: 'pay', gross: amt, expertName: ex.name });
     record(org, { type: 'pay', amount: amt, expertNet: ef.net, fee: ef.fee, expertId: ex.id, expertName: ex.name, expertAfter: ex.balance, roomId: room.id, roomName: room.name, memo, minutes: src.pay.minutes, rate: src.pay.rate, suggested: src.pay.suggested });
@@ -2545,26 +2549,45 @@ async function userApi(req, res, p, sess) {
 if (!S.apiClients) S.apiClients = [];  // [{id,name,keyId,secret,scopes,mintLimit,createdAt,revokedAt,lastUsedAt}]
 if (!S.handoffs) S.handoffs = {};      // 웹앱 → 충전 페이지 일회용 코드 {code:{orgId,by,exp}}
 if ((process.env.CHAIN_ADAPTER || 'internal') !== 'internal') new CHAIN.ChainAdapterNotReady(process.env.CHAIN_ADAPTER);
+if (!S.platform) S.platform = { wallet: 0, exchangeable: 0 }; // 운영 기관 지갑 (봇 사용료·운영 기관 몫이 모임)
+const acctOf = id => id === 'platform' ? { kind: 'platform', o: S.platform } : String(id).startsWith('exp:') ? { kind: 'expert', o: expertById(id.slice(4)) } : { kind: 'org', o: orgById(id) };
 const ledger = new CHAIN.InternalAdapter({
   S, save, blockMs: +process.env.CHAIN_BLOCK_MS || 1000,
   accounts: {
-    ids: () => S.orgs.map(o => o.id),
-    wallet: id => (orgById(id) || {}).wallet || 0,
-    exchangeable: id => { const o = orgById(id); return o ? Math.max(0, Math.min(o.exchangeable || 0, o.wallet)) : 0; },
+    ids: () => [...S.orgs.map(o => o.id), ...S.experts.map(e => 'exp:' + e.id), 'platform'],
+    wallet: id => { const a = acctOf(id); return !a.o ? 0 : a.kind === 'expert' ? a.o.balance || 0 : a.o.wallet || 0; },
+    add: (id, d) => { const a = acctOf(id); if (!a.o) throw new Error('없는 계정 ' + id); if (a.kind === 'expert') a.o.balance = (a.o.balance || 0) + d; else a.o.wallet = (a.o.wallet || 0) + d; },
+    // 환전할 수 있는 토큰: 기업은 다른 기업에게서 번 토큰, 운영 기관은 운영 기관 몫(수수료)만. 전문가는 지금은 관리자 정산으로만
+    exchangeable: id => { const a = acctOf(id); if (!a.o || a.kind === 'expert') return 0; return Math.max(0, Math.min(a.o.exchangeable || 0, a.o.wallet)); },
     credit: (id, n, t) => {
-      const o = orgById(id); o.wallet += n;
+      const a = acctOf(id), o = a.o; o.wallet += n;
       // 환전 반려로 돌려받는 토큰은 다시 환전할 수 있게 (같은 키가 소각한 그 신청일 때만)
       const back = /^refund-/.test(t.ref) && S.chain.txs.some(x => x.type === 'burn' && x.status === 'confirmed' && x.clientId === t.clientId && x.address === t.address && x.ref === t.ref.slice(7) && x.amount === n);
       if (back) o.exchangeable = (o.exchangeable || 0) + n;
-      record(o, { type: 'chain_mint', amount: n, txHash: t.hash, ref: t.ref, memo: t.memo, refund: back || undefined });
+      if (a.kind === 'org') record(o, { type: 'chain_mint', amount: n, txHash: t.hash, ref: t.ref, memo: t.memo, refund: back || undefined });
+      else S.ledger.push({ id: newId('t'), at: Date.now(), orgName: '운영 기관', type: 'chain_mint', amount: n, txHash: t.hash, ref: t.ref, memo: t.memo, platform: true });
     },
-    debit: (id, n, t) => { const o = orgById(id); if (o.wallet < n || (o.exchangeable || 0) < n) return false; o.wallet -= n; o.exchangeable -= n; record(o, { type: 'chain_burn', amount: n, txHash: t.hash, ref: t.ref, memo: t.memo }); return true; }
+    debit: (id, n, t) => {
+      const a = acctOf(id), o = a.o; if (!o || a.kind === 'expert' || o.wallet < n || (o.exchangeable || 0) < n) return false;
+      o.wallet -= n; o.exchangeable -= n;
+      if (a.kind === 'org') record(o, { type: 'chain_burn', amount: n, txHash: t.hash, ref: t.ref, memo: t.memo });
+      else S.ledger.push({ id: newId('t'), at: Date.now(), orgName: '운영 기관', type: 'chain_burn', amount: n, txHash: t.hash, ref: t.ref, memo: t.memo, platform: true });
+      return true;
+    }
   },
   onConfirm: (t, id) => {
+    if (id === 'platform') return;
     notifyOrg(id, t.type === 'mint' ? `토큰 ${t.amount}개 충전이 확정됐어요 (거래 ${t.hash.slice(0, 12)}…, 블록 ${t.blockNumber}).` : `토큰 ${t.amount}개 환전이 확정됐어요 (거래 ${t.hash.slice(0, 12)}…). 송금은 충전·환전 페이지에서 처리돼요.`);
     emit('room', {}, id);
   }
 });
+// 운영 기관 지갑에서 내보낼 때 모자라면 운영 기관이 새로 발행해 채움 (환불·대신 부담 등)
+const acctLabel = addr => { const id = ledger.accountOf(addr); if (!id) return ''; const a = acctOf(id); return !a.o ? '' : a.kind === 'platform' ? '운영 기관' : a.kind === 'expert' ? `전문가 ${a.o.name}` : a.o.name; };
+function fromPlatform(toId, n, kind, memo) {
+  if (!(n > 0)) return;
+  const lack = n - S.platform.wallet; if (lack > 0) ledger.mintNow('platform', lack, 'treasury', '운영 기관 부족분 발행');
+  ledger.transfer('platform', toId, n, kind, memo);
+}
 const nonces = new Map(); // 서명 재사용(재전송 공격) 막기: 5분 안에 같은 nonce 거절
 setInterval(() => { const t = Date.now() - 6 * 6e4; for (const [k, v] of nonces) if (v < t) nonces.delete(k); }, 6e4).unref();
 const rawBody = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e5) req.destroy(); }); req.on('end', () => ok(d)); });
@@ -2585,8 +2608,8 @@ async function chainApi(req, res, p) {
   const a = chainAuth(req, p, raw); if (a.error) return json(res, a.code, { error: a.error });
   const c = a.client, need = s => c.scopes.includes(s);
   let b = {}; if (raw) { try { b = JSON.parse(raw); } catch (e) { return json(res, 400, { error: 'JSON이 아니에요' }); } }
-  const acct = addr => { const id = ledger.accountOf(addr), o = id && orgById(id); return o ? { ...ledger.balanceOf(addr), name: o.name } : null; };
-  if (p === '/chain/v1/info' && req.method === 'GET') return json(res, 200, { ...ledger.info(), client: { name: c.name, scopes: c.scopes } });
+  const acct = addr => { const id = ledger.accountOf(addr); if (!id) return null; const a = acctOf(id); if (!a.o) return null; return { ...ledger.balanceOf(addr), name: a.kind === 'platform' ? '운영 기관' : a.o.name, kind: a.kind }; };
+  if (p === '/chain/v1/info' && req.method === 'GET') return json(res, 200, { ...ledger.info(), treasury: ledger.addressOf('platform'), supply: ledger.supply(), client: { name: c.name, scopes: c.scopes } });
   if (p === '/chain/v1/sessions' && req.method === 'POST') {
     if (!need('session')) return json(res, 403, { error: 'session 권한이 없어요' });
     const h = S.handoffs[String(b.code || '')]; delete S.handoffs[String(b.code || '')]; save();
@@ -2612,6 +2635,9 @@ async function chainApi(req, res, p) {
       const day = S.chain.txs.filter(t => t.clientId === c.id && t.type === 'mint' && t.status !== 'failed' && Date.now() - t.createdAt < 864e5).reduce((x, t) => x + t.amount, 0);
       if (day + amount > c.mintLimit) return json(res, 400, { error: `이 키의 하루 충전 한도(${c.mintLimit}토큰)를 넘어요` });
     }
+    const target = ledger.accountOf(String(b.address || ''));
+    if (target === 'platform' && !need('treasury')) return json(res, 403, { error: '운영 기관 지갑은 treasury 권한이 있어야 해요' });
+    if (target && String(target).startsWith('exp:')) return json(res, 403, { error: '전문가 지갑은 아직 관리자 정산으로만 처리해요' });
     const r = ledger.submit({ type, address: String(b.address || ''), amount, ref: str(b.ref, 80), memo: str(b.memo, 200), clientId: c.id, idem });
     if (r.error) return json(res, 400, { error: r.error });
     return json(res, r.replay ? 200 : 202, r.tx);

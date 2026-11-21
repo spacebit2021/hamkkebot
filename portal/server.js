@@ -121,10 +121,26 @@ async function handle(req, res) {
     }
     if (!s || !s.admin) return send(res, 200, page('운영자', `<h1>충전·환전 운영자</h1><form method="post" action="/admin" class="card"><label>비밀번호<input type="password" name="password" autocomplete="current-password"></label><div class="row"><button>들어가기</button></div></form>`));
     const info = await hb('GET', '/chain/v1/info'), wait = D.payouts.filter(x => x.status === 'requested');
+    const tr = info.treasury ? await hb('GET', `/chain/v1/accounts/${info.treasury}`) : { error: '운영 기관 지갑 정보를 받지 못했어요' };
     return send(res, 200, page('운영자', `<h1>충전·환전 운영자</h1><div class="mute">${info.error ? e(info.error) : `${e(info.chain)} · 블록 ${info.blockNumber} · 키 ${e(info.client.name)} (${info.client.scopes.join(', ')})`}</div>${msgBox(u.searchParams.get('m'))}
+<div class="card"><h2>운영 기관 지갑</h2>${tr.error ? msgBox(tr.error) : `<div class="mute">주소 <code>${e(info.treasury)}</code></div><div class="grid" style="margin-top:8px"><div><div class="mute">잔액 (봇 사용료·운영 기관 몫)</div><div class="big">${tr.balance.toLocaleString()}</div></div><div><div class="mute">환전할 수 있는 토큰 (운영 기관 몫)</div><div class="big">${tr.exchangeable.toLocaleString()}</div></div></div>
+<div class="mute">전체 발행량 ${info.supply.supply.toLocaleString()} · 지갑 잔액 합 ${info.supply.held.toLocaleString()} ${info.supply.ok ? '<span class="ok">일치</span>' : '<span class="bad">불일치</span>'}</div>
+${info.client.scopes.includes('treasury') ? `<form method="post" action="/admin/treasury"><input type="hidden" name="csrf" value="${s.csrf}"><div class="grid" style="margin-top:10px"><label>환전할 토큰 (최대 ${tr.exchangeable})<input name="tokens" type="number" min="1" max="${tr.exchangeable}" required></label><label>은행<input name="bank" maxlength="20" required></label><label>예금주<input name="holder" maxlength="30" required></label><label>계좌번호<input name="account" maxlength="30" required></label></div><div class="row"><button>운영 기관 몫 환전 신청</button></div></form>` : '<p class="mute">이 API 키에는 treasury 권한이 없어 운영 기관 지갑을 환전할 수 없어요.</p>'}`}</div>
 <div class="card"><h2>송금 기다리는 환전 ${wait.length}건</h2><table><tbody>${wait.map(o => `<tr><td>${new Date(o.at).toLocaleString('ko-KR')}<br>${e(o.name)} · ${e(o.by)}</td><td>${o.tokens}토큰<br><b>${won(o.krw)}</b></td><td>${e(o.bank)}<br>${e(o.holder)}<br><code>${e(o.account)}</code></td><td><a href="/tx/${o.txHash}">소각 거래</a></td><td><form method="post" action="/admin/payout"><input type="hidden" name="csrf" value="${s.csrf}"><input type="hidden" name="id" value="${o.id}"><button name="act" value="paid">송금 완료</button><input name="note" placeholder="반려 사유" maxlength="80"><button class="ghost" name="act" value="reject">반려 (토큰 돌려줌)</button></form></td></tr>`).join('') || '<tr><td class="mute">없음</td></tr>'}</tbody></table></div>
 <div class="card"><h2>최근 충전</h2><table><tbody>${D.orders.slice(-20).reverse().map(o => `<tr><td>${new Date(o.at).toLocaleString('ko-KR')}</td><td>${e(o.name)}</td><td>${o.tokens}토큰 · ${won(o.krw)}</td><td>${o.method === 'test' ? '테스트 결제' : e(o.method)}</td><td>${o.txHash ? `<a href="/tx/${o.txHash}">거래</a>` : e(o.error || '')}</td></tr>`).join('') || '<tr><td class="mute">없음</td></tr>'}</tbody></table></div>
 <div class="card"><h2>처리한 환전</h2><table><tbody>${D.payouts.filter(x => x.status !== 'requested').slice(-20).reverse().map(o => `<tr><td>${new Date(o.doneAt || o.at).toLocaleString('ko-KR')}</td><td>${e(o.name)}</td><td>${o.tokens}토큰 · ${won(o.krw)}</td><td>${o.status === 'paid' ? '송금 완료' : `반려 · ${e(o.note || '')}`}</td></tr>`).join('') || '<tr><td class="mute">없음</td></tr>'}</tbody></table></div>`));
+  }
+  if (p === '/admin/treasury' && req.method === 'POST') {
+    const s = sess(req), f = await form(req);
+    if (!s || !s.admin || f.csrf !== s.csrf) return go(res, '/admin');
+    const info = await hb('GET', '/chain/v1/info'); if (info.error) return go(res, '/admin?m=' + encodeURIComponent(info.error));
+    const tokens = Number(f.tokens), bank = String(f.bank || '').trim().slice(0, 20), holder = String(f.holder || '').trim().slice(0, 30), account = String(f.account || '').replace(/[^0-9-]/g, '').slice(0, 30);
+    if (!Number.isInteger(tokens) || tokens < 1 || !bank || !holder || account.replace(/-/g, '').length < 6) return go(res, '/admin?m=' + encodeURIComponent('토큰·은행·예금주·계좌번호를 확인해 주세요'));
+    const o = { id: id('pay_'), at: Date.now(), address: info.treasury, name: '운영 기관', by: '운영자', tokens, krw: tokens * PRICE, bank, holder, account, status: 'requested', txHash: null };
+    const t = await hb('POST', '/chain/v1/tx', { type: 'burn', address: info.treasury, amount: tokens, ref: o.id, memo: `운영 기관 몫 환전 ${won(o.krw)}`, idempotencyKey: o.id });
+    if (t.error) return go(res, '/admin?m=' + encodeURIComponent('환전하지 못했어요: ' + t.error));
+    o.txHash = t.hash; D.payouts.push(o); save();
+    return go(res, '/admin?m=' + encodeURIComponent(`운영 기관 몫 ${tokens}토큰(${won(o.krw)}) 환전을 신청했어요. 송금 후 「송금 완료」를 눌러 주세요.`));
   }
   if (p === '/admin/payout' && req.method === 'POST') {
     const s = sess(req), f = await form(req);
