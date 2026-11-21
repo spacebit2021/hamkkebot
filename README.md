@@ -188,6 +188,7 @@ Docker: `echo {} > data.json && docker build -t hamkkebot . && docker run -p 300
 - `low-balance` — 잔액 부족 시 전문가 수락·사양·취소, 잔액 소진 경고
 - `team-room` — 전문가 팀방 `/use` `/send` `/end`, 자동 연결 해제
 - `join` — 호출되지 않은 전문가의 `/join` 요청, 기업 승인·거절, 단가 고정
+- `mkt-doc` — 마케팅 봇이 승인된 문서만 문맥으로 쓰는지 (저장 → 전문가 수정안 대기 → 승인 → 되돌리기). `VERBOSE=1 node tests/mkt-doc.test.js`로 봇이 받은 기업 정보를 직접 볼 수 있음
 - `doc` — HTML 정리기 공격 사례, 문서 저장·충돌·되돌리기·다운로드, 함께봇 정리안, 전문가 `/info`·`/ask`·파일 올리기, 승인·거절, 상담 종료 후 차단
 - `migration` — 이전 버전 데이터 옮기기, 실시간 알림 분리
 
