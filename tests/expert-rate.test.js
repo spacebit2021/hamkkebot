@@ -1,0 +1,60 @@
+// 실행: npm test  (가짜 텔레그램·Claude 응답으로 서버 흐름을 시험합니다. 실제 API는 호출하지 않습니다)
+const path = require('path'), os = require('os');
+process.env.DATA_FILE = path.join(os.tmpdir(), 'hb-test-' + process.pid + '.json');
+try { require('fs').unlinkSync(process.env.DATA_FILE); } catch (e) {}
+process.on('exit', () => { try { require('fs').unlinkSync(process.env.DATA_FILE); } catch (e) {} });
+let FAILS = 0;
+const sent=[];const queue=[];let waiter=null;let mid=100;
+global.fetch=async(url,opt={})=>{const u=String(url);const body=opt.body?JSON.parse(opt.body):{};
+ const ok=r=>({ok:true,status:200,json:async()=>r});
+ if(u.endsWith('/getMe'))return ok({ok:true,result:{username:'hb'}});
+ if(u.includes('getUpdates'))return new Promise(r=>{const f=()=>{if(queue.length)r(ok({ok:true,result:queue.splice(0)}));else waiter=f};f()});
+ if(u.includes('/sendMessage')){mid++;sent.push([body.chat_id,mid,body.text]);return ok({ok:true,result:{message_id:mid}})}
+ return ok({ok:true,result:{}})};
+const push=(...us)=>{queue.push(...us);if(waiter){const w=waiter;waiter=null;w()}};
+const P=(id,text)=>({update_id:Math.floor(Math.random()*1e9),message:{chat:{id,type:'private'},from:{first_name:'김'},text}});
+Object.assign(process.env,{TELEGRAM_BOT_TOKEN:'x',ADMIN_PASSWORD:'adminpass',PORT:'3993',PUBLIC_URL:'https://hb.example.org'});
+require(path.join(__dirname, '..', 'server.js'));
+const http=require('http');
+function mk(){let ck='';return (p,b)=>new Promise(r=>{const q=http.request('http://localhost:3993'+p,{method:b?'POST':'GET',headers:ck?{cookie:ck}:{}},res=>{const sc=res.headers['set-cookie'];if(sc)ck=sc[0].split(';')[0];let d='';res.on('data',c=>d+=c);res.on('end',()=>{let j;try{j=JSON.parse(d)}catch(e){j=d}r({s:res.statusCode,j})})});if(b)q.write(JSON.stringify(b));q.end()})}
+const A=mk(),U=mk(),E=mk();const sl=ms=>new Promise(r=>setTimeout(r,ms));
+const chk=(n,c)=>{if(!c)FAILS++;console.log((c?'PASS ':'FAIL ')+n)};
+const lastTo=id=>sent.filter(s=>s[0]===id).pop()[2];
+(async()=>{await sl(300);
+ await A('/api/admin/login',{password:'adminpass'});
+ await A('/api/admin/orgs',{name:'빵공방',loginId:'bread',password:'password1'});
+ const o=(await A('/api/admin/state')).j.orgs[0].id; await A(`/api/admin/orgs/${o}/charge`,{amount:20});
+ await U('/api/login',{loginId:'bread',password:'password1'});
+ const ex=(await A('/api/admin/experts',{name:'김세무',field:'세무사'})).j;
+ push(P(77,'/expert '+ex.regCode));await sl(150);
+ chk('registration msg asks for rate',lastTo(77).includes('/rate'));
+ chk('linked but no rate → hidden',(await U('/api/state')).j.experts.length===0);
+ const r=(await U('/api/state')).j.rooms[0].id;
+ chk('call without rate blocked',(await U(`/api/rooms/${r}/call`,{expertId:ex.id,text:'q'})).s===400);
+ push(P(77,'/rate 0'));await sl(100);chk('bad rate rejected',lastTo(77).includes('1~'));
+ push(P(77,'/login'));await sl(100);
+ const lm=lastTo(77);const code=lm.match(/코드: (\w+)/)[1];chk('login link uses PUBLIC_URL',lm.includes('https://hb.example.org/expert?code='+code));
+ chk('wrong code',(await E('/api/expert/login',{code:'XXXX'})).s===401);
+ chk('expert login',(await E('/api/expert/login',{code})).s===200);
+ chk('code is one-time',(await mk()('/api/expert/login',{code})).s===401);
+ chk('profile rate validation',(await E('/api/expert/profile',{name:'김세무',field:'세무사',rate:2.5})).s===400);
+ chk('profile save',(await E('/api/expert/profile',{name:'김하늘 세무사',field:'세무사 · 회계',rate:6,career:'경력 10년',hours:'평일 오후',available:true})).s===200);
+ let xs=(await U('/api/state')).j.experts;chk('org sees rate + profile',xs.length===1&&xs[0].rate===6&&xs[0].career==='경력 10년');
+ chk('expert cannot use org api',(await E('/api/state')).s===401);
+ push(P(77,'/off'));await sl(100);
+ chk('unavailable call blocked',(await U(`/api/rooms/${r}/call`,{expertId:ex.id,text:'q'})).s===400);
+ push(P(77,'/on'));await sl(100);
+ // call, then rate change mid-consult, then advance clock 90 min
+ await U(`/api/rooms/${r}/call`,{expertId:ex.id,text:'질문'});await sl(50);
+ chk('expert DM shows rate',lastTo(77).includes('시간당 6토큰'));
+ push(P(77,'/rate 10'));await sl(100);
+ const realNow=Date.now;Date.now=()=>realNow()+90*60000;
+ await U(`/api/rooms/${r}/end`,{expertId:ex.id});
+ Date.now=realNow;
+ const pm=(await U('/api/state')).j.rooms[0].msgs.find(m=>m.pay);
+ chk('suggested = 90min × 6 (locked rate) = 9',pm.pay.minutes===90&&pm.pay.rate===6&&pm.pay.suggested===9);
+ chk('pay',(await U(`/api/rooms/${r}/pay`,{msgId:pm.id,amount:9})).j.wallet===11);
+ const es=(await E('/api/expert/state')).j;chk('expert sees received with minutes',es.profile.balance===9&&es.received[0].minutes===90&&es.profile.rate===10);
+ const led=(await A('/api/admin/state')).j.ledger.find(l=>l.type==='pay');chk('ledger has minutes+suggested',led.minutes===90&&led.suggested===9);
+ chk('expert page served',(await mk()('/expert')).s===200);
+ process.exit(FAILS?1:0)})().catch(e=>{console.error(e);process.exit(1)});

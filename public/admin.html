@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>함께봇 관리자</title>
+<link href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@700;800&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/*
+VOICE: 장부처럼 차분하고 정확하게
+IDEA: 운영 기관의 출납부 — 기업 지갑, 전문가 잔액, 거래 기록
+PICTURE: 상단 합계 숫자 세 개, 기업 카드마다 큰 잔액과 충전 칸
+COLOUR and TYPE: 흰 바탕, 먹색, 코발트 주색 / Gothic A1 + Noto Sans KR
+LAYOUT: 한 줄 기둥, 카드 격자, 표는 휴대폰에서 세로로 쌓임
+*/
+:root{color-scheme:light dark;--bg:light-dark(#fff,#0f1117);--ink:light-dark(#16171d,#eef0f6);--mute:light-dark(#5d6170,#a3a8b8);--line:light-dark(#e2e4ec,#272b38);--pri:light-dark(#2d45e8,#7d8dff);--pri-ink:light-dark(#fff,#0f1117);--side:light-dark(#f3f4f8,#161922);--card:light-dark(#fff,#1a1d28);--err:#d1453b}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Noto Sans KR",system-ui,sans-serif}
+h1,h2,h3{font-family:"Gothic A1",sans-serif;margin:0;line-height:1.15}
+button,input,select,summary{font:inherit;color:inherit}
+:focus-visible{outline:3px solid #ffc531;outline-offset:2px}
+.wrap{max-width:1080px;margin:0 auto;padding:clamp(20px,4vw,48px) max(5vw,16px)}
+header.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+h1{font-size:clamp(26px,4vw,36px);font-weight:800}
+h2{font-size:22px;font-weight:800;margin:40px 0 14px}
+h3{font-size:18px;font-weight:800}
+.lead{color:var(--mute);margin:6px 0 0}
+.sum{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:22px}
+.sum div{border-radius:18px;padding:16px 18px;background:var(--side)}
+.sum div:first-child{background:var(--pri);color:var(--pri-ink)}
+.sum span{font-size:13px;display:block}.sum b{font:800 clamp(28px,5vw,40px)/1.1 "Gothic A1";font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:14px}
+.card{border:1.5px solid var(--line);border-radius:18px;padding:16px 18px;display:flex;flex-direction:column;gap:10px;background:var(--card)}
+.card .head{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.card .bal{font:800 30px "Gothic A1";font-variant-numeric:tabular-nums;white-space:nowrap}
+.card .bal small{font:500 13px "Noto Sans KR";color:var(--mute)}
+.inl{display:flex;gap:6px;flex-wrap:wrap}.inl .field{flex:1 1 90px}
+label{display:block;font-size:14px;font-weight:500;margin:0 0 6px}
+.field{width:100%;min-height:44px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);padding:10px 12px;font-size:16px}
+.form{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:10px;align-items:end;border:1.5px dashed var(--line);border-radius:18px;padding:16px;margin-bottom:14px}
+.btn{min-height:44px;padding:0 16px;border-radius:22px;border:0;background:var(--pri);color:var(--pri-ink);font-weight:700;cursor:pointer;white-space:nowrap}
+.btn.ghost{background:none;border:1.5px solid var(--line);color:var(--ink)}
+.btn.sm{min-height:38px;padding:0 12px;font-size:14px}
+.btn:disabled{opacity:.45;cursor:default}
+.msg{font-size:14px;min-height:20px;color:var(--mute)}.msg.err{color:var(--err)}
+.users{font-size:14px;border-top:1px solid var(--line);padding-top:8px}
+.users li{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;flex-wrap:wrap}
+.users ul{list-style:none;margin:0;padding:0}
+details summary{cursor:pointer;min-height:40px;display:flex;align-items:center;font-size:14px;color:var(--mute)}
+details .inl{margin-top:6px}
+.code{font:800 22px "Gothic A1";letter-spacing:.1em;background:var(--side);border-radius:10px;padding:4px 12px}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th{text-align:left;font-size:13px;color:var(--mute);font-weight:500;border-bottom:1.5px solid var(--line);padding:8px 6px}
+td{border-bottom:1px solid var(--line);padding:10px 6px;vertical-align:middle}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tag{font-size:12px;padding:2px 8px;border-radius:8px;background:var(--side);white-space:nowrap}
+.tag.on{background:light-dark(#e3f6ee,#12352a);color:light-dark(#06784f,#6fe0b0)}
+.login{max-width:380px;margin:12vh auto;padding:0 16px}
+.empty{color:var(--mute);padding:14px 6px}
+.filter{display:flex;gap:8px;align-items:center;margin-bottom:10px}.filter select{max-width:260px}
+@media(max-width:700px){.sum{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){table{font-size:13px}.stack thead{display:none}.stack tr{display:grid;padding-block:10px;border-bottom:1px solid var(--line)}.stack td{display:flow-root;border:0;padding:3px 0;padding-inline-start:7em;text-align:start}.stack td::before{content:attr(data-l);float:inline-start;width:6.5em;margin-inline-start:-7em;color:var(--mute)}.stack td:empty{display:none}}
+</style>
+<script>new MutationObserver(()=>{for(const c of document.querySelectorAll('.stack td:not([data-l])')){let i=0,p=c;while(p=p.previousElementSibling)i+=p.colSpan;c.dataset.l=c.closest('table').rows[0].cells[i]?.textContent||''}}).observe(document,{childList:true,subtree:true})</script>
+</head>
+<body>
+<div id="login" class="login" hidden>
+ <h1>관리자 로그인</h1>
+ <p class="lead">기업 계정, 상담 토큰, 사람 전문가를 관리합니다.</p>
+ <form id="loginForm" style="margin-top:20px">
+  <label for="pw">관리자 비밀번호</label>
+  <input class="field" id="pw" type="password" autocomplete="current-password" required>
+  <div style="margin-top:12px"><button class="btn">들어가기</button></div>
+  <div class="msg err" id="loginMsg" style="margin-top:8px"></div>
+ </form>
+</div>
+
+<div id="main" class="wrap" hidden>
+ <header class="top">
+  <div><h1>함께봇 운영</h1><p class="lead">기업에 토큰을 충전하면, 기업은 상담이 끝날 때 원하는 만큼 전문가에게 보냅니다.</p></div>
+  <button class="btn ghost sm" id="logout" type="button">로그아웃</button>
+ </header>
+ <div class="sum">
+  <div><span>전체 기업 토큰 잔액</span><b id="sWallet">0</b></div>
+  <div><span>전문가 미정산 토큰</span><b id="sExpert">0</b></div>
+  <div><span>기업 · 전문가</span><b id="sCount">0 · 0</b></div>
+ </div>
+
+ <h2>기업</h2>
+ <form class="form" id="orgForm">
+  <div><label for="oName">기업명</label><input class="field" id="oName" required placeholder="예: 마을빵공방 협동조합"></div>
+  <div><label for="oUser">담당자 이름</label><input class="field" id="oUser" placeholder="예: 이수진"></div>
+  <div><label for="oId">로그인 아이디</label><input class="field" id="oId" required autocapitalize="none" placeholder="영문 소문자·숫자 3자 이상"></div>
+  <div><label for="oPw">초기 비밀번호</label><input class="field" id="oPw" required minlength="8" placeholder="8자 이상"></div>
+  <div><button class="btn">기업 만들기</button></div>
+  <div class="msg" id="orgMsg" style="grid-column:1/-1"></div>
+ </form>
+ <div class="grid" id="orgs"></div>
+
+ <h2>사람 전문가</h2>
+ <p class="lead" style="margin:-6px 0 14px" id="tgNote"></p>
+ <form class="form" id="expForm">
+  <div><label for="xName">이름</label><input class="field" id="xName" required placeholder="예: 김하늘"></div>
+  <div><label for="xField">분야</label><input class="field" id="xField" required placeholder="예: 세무사 · 사회적기업 회계"></div>
+  <div><label for="xDesc">소개 (선택)</label><input class="field" id="xDesc" placeholder="예: 인건비 지원 정산 경력"></div>
+  <div><button class="btn">전문가 등록</button></div>
+  <div class="msg" id="expMsg" style="grid-column:1/-1"></div>
+ </form>
+ <table class="stack"><thead><tr><th>전문가</th><th>분야 · 단가</th><th>상태</th><th class="num">받은 토큰</th><th>정산 · 관리</th></tr></thead><tbody id="experts"></tbody></table>
+ <p class="lead" style="font-size:14px">정산 처리는 기록만 남깁니다. 실제 지급(계좌이체 등)은 별도로 진행하세요.</p>
+
+ <h2>거래 기록</h2>
+ <div class="filter"><label for="lf" style="margin:0">기업</label><select class="field" id="lf"><option value="">전체</option></select></div>
+ <table class="stack"><thead><tr><th>일시</th><th>기업</th><th>구분</th><th>내용</th><th class="num">수량</th><th class="num">기업 잔액</th></tr></thead><tbody id="ledger"></tbody></table>
+</div>
+
+<script>
+{
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const n=v=>(+v||0).toLocaleString('ko-KR');
+let D=null, es=null;
+const api=async(p,b)=>{const r=await fetch(p,{method:b?'POST':'GET',headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({error:'응답 오류'}));if(r.status===401&&p!=='/api/admin/login'){showLogin();throw new Error('login')}return j};
+const T={charge:'충전',deduct:'차감',pay:'상담 지급',payout:'정산'};
+const when=t=>new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+const say=(el,text,err)=>{el.className='msg'+(err?' err':'');el.textContent=text};
+
+function showLogin(m){$('main').hidden=true;$('login').hidden=false;if(es){es.close();es=null}$('loginMsg').textContent=m||'';$('pw').focus()}
+async function load(){
+ D=await api('/api/admin/state');
+ $('login').hidden=true;$('main').hidden=false;
+ if(!es){es=new EventSource('/api/events');let t;es.addEventListener('room',()=>{clearTimeout(t);t=setTimeout(()=>{const f=document.activeElement;if(f&&f.matches('input,select'))return;load().catch(()=>{})},800)})}
+ $('sWallet').textContent=n(D.orgs.reduce((a,o)=>a+o.wallet,0));
+ $('sExpert').textContent=n(D.experts.reduce((a,x)=>a+x.balance,0));
+ $('sCount').textContent=`${D.orgs.length} · ${D.experts.length}`;
+ $('tgNote').textContent=D.telegram.enabled?`전문가는 텔레그램에서 @${D.telegram.username} 봇에게 등록코드를 보내 등록하고, /login 으로 프로필 페이지(/expert)에 들어가 시간당 토큰을 직접 정합니다. 단가를 정해야 기업 목록에 보입니다.`:'텔레그램 봇 토큰이 설정되지 않아 사람 전문가를 쓸 수 없어요.';
+ renderOrgs();renderExperts();renderLedger();
+}
+function renderOrgs(){
+ $('orgs').innerHTML=D.orgs.length?D.orgs.map(o=>`<div class="card" data-org="${o.id}">
+  <div class="head"><h3>${esc(o.name)}</h3><div class="bal">${n(o.wallet)}<small> 개</small></div></div>
+  <div class="inl"><input class="field" type="number" inputmode="numeric" min="1" step="1" placeholder="수량" data-amt aria-label="${esc(o.name)} 토큰 수량"><input class="field" maxlength="100" placeholder="메모" data-memo aria-label="메모"></div>
+  <div class="inl"><button class="btn sm" type="button" data-act="charge">충전</button><button class="btn ghost sm" type="button" data-act="deduct">차감</button></div>
+  <div class="msg" data-msg></div>
+  <div class="users"><ul>${o.users.map(u=>`<li><span><b>${esc(u.name)}</b> · ${esc(u.loginId)}</span><details><summary>비밀번호 재설정</summary><div class="inl"><input class="field" type="text" minlength="8" placeholder="새 비밀번호" data-newpw="${u.id}"><button class="btn ghost sm" type="button" data-pw="${u.id}">변경</button><button class="btn ghost sm" type="button" data-deluser="${u.id}">계정 삭제</button></div></details></li>`).join('')||'<li class="msg err">로그인 계정이 없어요. 아래에서 추가하세요.</li>'}</ul>
+  <details><summary>계정 추가 · 기업 관리</summary>
+   <div class="inl"><input class="field" placeholder="이름" data-uname><input class="field" placeholder="아이디" autocapitalize="none" data-uid><input class="field" placeholder="비밀번호 8자 이상" data-upw><button class="btn ghost sm" type="button" data-adduser>계정 추가</button></div>
+   <div class="inl"><input class="field" placeholder="새 기업명" value="${esc(o.name)}" data-rename><button class="btn ghost sm" type="button" data-renamebtn>이름 변경</button><button class="btn ghost sm" type="button" data-delorg>기업 삭제</button></div>
+   <p class="msg">채팅방 ${o.rooms}개${o.mission?` · 소셜미션: ${esc(o.mission)}`:''}</p>
+  </details></div>
+ </div>`).join(''):'<p class="empty">아직 기업이 없어요. 위에서 첫 기업과 계정을 만들어 주세요.</p>';
+ const cur=$('lf').value;
+ $('lf').innerHTML='<option value="">전체</option>'+D.orgs.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('');
+ $('lf').value=D.orgs.some(o=>o.id===cur)?cur:'';
+}
+function renderExperts(){
+ $('experts').innerHTML=D.experts.length?D.experts.map(x=>`<tr data-x="${x.id}"><td><b>${esc(x.name)}</b>${x.desc?`<div class="msg">${esc(x.desc)}</div>`:''}</td><td>${esc(x.field)}<div class="msg">${x.rate?`시간당 ${x.rate}토큰`:'단가 미설정'}</div></td>
+  <td>${x.linked?(!x.rate?`<span class="tag">단가 미설정 · 기업에 안 보임</span>`:!x.available?`<span class="tag">상담 꺼짐</span>`:`<span class="tag on">활동 중${x.active?` · 상담 ${x.active}건`:''}</span>`):`<span class="tag">등록 대기</span> <span class="code">${esc(x.regCode)}</span><div class="msg">텔레그램에서 /expert ${esc(x.regCode)}</div>`}</td>
+  <td class="num">${n(x.balance)}</td>
+  <td><div class="inl"><input class="field" type="number" inputmode="numeric" min="1" max="${x.balance}" step="1" placeholder="수량" data-pamt aria-label="${esc(x.name)} 정산 수량" ${x.balance?'':'disabled'}><button class="btn ghost sm" type="button" data-payout ${x.balance?'':'disabled'}>정산</button>${x.linked?'':'<button class="btn ghost sm" type="button" data-newcode>새 코드</button>'}<button class="btn ghost sm" type="button" data-delx>삭제</button></div><div class="msg" data-msg></div></td></tr>`).join(''):'<tr><td colspan="5" class="empty">등록된 사람 전문가가 없어요.</td></tr>';
+}
+function renderLedger(){
+ const f=$('lf').value, rows=D.ledger.filter(l=>!f||l.orgId===f);
+ $('ledger').innerHTML=rows.length?rows.map(l=>`<tr><td>${when(l.at)}</td><td>${esc(l.orgName||'—')}</td><td><span class="tag">${T[l.type]||l.type}</span></td><td>${esc(l.type==='pay'?`${l.roomName||''} → ${l.expertName}${l.minutes?` · ${l.minutes}분${l.suggested?` (계산 ${l.suggested}개)`:''}`:''}`:l.type==='payout'?`${l.expertName} 정산`:'')}${l.memo?` <span style="color:var(--mute)">${esc(l.memo)}</span>`:''}</td><td class="num">${l.type==='charge'?'+':'−'}${n(l.amount)}</td><td class="num">${l.type==='payout'?'':n(l.walletAfter)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">아직 거래가 없어요.</td></tr>';
+}
+// 두 번 눌러야 실행되는 위험 버튼
+const confirm2=(b,label)=>{if(b.dataset.armed)return true;b.dataset.armed=1;const old=b.textContent;b.textContent=label||'한 번 더 누르면 실행';setTimeout(()=>{delete b.dataset.armed;b.textContent=old},4000);return false};
+
+$('loginForm').addEventListener('submit',async e=>{e.preventDefault();const j=await api('/api/admin/login',{password:$('pw').value});if(j.error){$('loginMsg').textContent=j.error;return}$('pw').value='';load().catch(()=>{})});
+$('logout').onclick=async()=>{await api('/api/admin/logout',{}).catch(()=>{});showLogin('로그아웃했어요.')};
+$('lf').onchange=renderLedger;
+$('orgForm').addEventListener('submit',async e=>{e.preventDefault();
+ const j=await api('/api/admin/orgs',{name:$('oName').value,userName:$('oUser').value,loginId:$('oId').value,password:$('oPw').value});
+ if(j.error)return say($('orgMsg'),j.error,1);
+ say($('orgMsg'),`만들었어요. 기업에 아이디 "${$('oId').value.trim().toLowerCase()}"와 초기 비밀번호를 전달하고, 로그인 후 바꾸도록 안내해 주세요.`);
+ for(const id of ['oName','oUser','oId','oPw'])$(id).value='';load();
+});
+$('orgs').addEventListener('click',async e=>{
+ const b=e.target.closest('button');if(!b)return;const c=b.closest('[data-org]'),id=c.dataset.org,m=c.querySelector('[data-msg]'),q=s=>c.querySelector(s);
+ let j;
+ if(b.dataset.act){const amt=+q('[data-amt]').value;if(!Number.isInteger(amt)||amt<1)return say(m,'1 이상의 정수를 입력해 주세요',1);
+  j=await api(`/api/admin/orgs/${id}/${b.dataset.act}`,{amount:amt,memo:q('[data-memo]').value});if(!j.error){say(m,`${n(amt)}개 ${T[b.dataset.act]} 완료 · 잔액 ${n(j.wallet)}개`);return load()}}
+ else if(b.dataset.pw){j=await api(`/api/admin/users/${b.dataset.pw}/password`,{password:q(`[data-newpw="${b.dataset.pw}"]`).value});if(!j.error){say(m,'비밀번호를 바꿨어요. 그 계정의 기존 로그인은 끊겼어요.');return}}
+ else if(b.dataset.deluser){if(!confirm2(b,'정말 삭제'))return;j=await api(`/api/admin/users/${b.dataset.deluser}/delete`,{})}
+ else if(b.hasAttribute('data-adduser')){j=await api(`/api/admin/orgs/${id}/users`,{userName:q('[data-uname]').value,loginId:q('[data-uid]').value,password:q('[data-upw]').value})}
+ else if(b.hasAttribute('data-renamebtn')){j=await api(`/api/admin/orgs/${id}/rename`,{name:q('[data-rename]').value})}
+ else if(b.hasAttribute('data-delorg')){if(!confirm2(b,'채팅방까지 모두 삭제'))return;j=await api(`/api/admin/orgs/${id}/delete`,{})}
+ if(j&&j.error)return say(m,j.error,1);
+ load();
+});
+$('expForm').addEventListener('submit',async e=>{e.preventDefault();
+ const j=await api('/api/admin/experts',{name:$('xName').value,field:$('xField').value,desc:$('xDesc').value});
+ if(j.error)return say($('expMsg'),j.error,1);
+ say($('expMsg'),`등록했어요. 전문가에게 "텔레그램에서 @${j.username||'(봇 미설정)'} 봇과 대화를 시작한 뒤 /expert ${j.regCode} 를 보내 주세요"라고 안내해 주세요.`);
+ for(const id of ['xName','xField','xDesc'])$(id).value='';load();
+});
+$('experts').addEventListener('click',async e=>{
+ const b=e.target.closest('button');if(!b)return;const tr=b.closest('[data-x]'),id=tr.dataset.x,m=tr.querySelector('[data-msg]');let j;
+ if(b.hasAttribute('data-payout')){const amt=+tr.querySelector('[data-pamt]').value;if(!Number.isInteger(amt)||amt<1)return say(m,'정산할 수량을 입력해 주세요',1);if(!confirm2(b,`${n(amt)}개 정산 확인`))return;j=await api('/api/admin/payout',{expertId:id,amount:amt})}
+ else if(b.hasAttribute('data-newcode'))j=await api(`/api/admin/experts/${id}/newcode`,{});
+ else if(b.hasAttribute('data-delx')){if(!confirm2(b,'정말 삭제'))return;j=await api(`/api/admin/experts/${id}/delete`,{})}
+ if(j&&j.error)return say(m,j.error,1);
+ load();
+});
+load().catch(()=>{});
+}
+</script>
+</body>
+</html>

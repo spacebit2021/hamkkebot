@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>함께봇 전문가 프로필</title>
+<link href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@700;800&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/*
+VOICE: 명함을 다듬듯 단정하게
+IDEA: 기업이 보게 될 전문가 명함 — 왼쪽에서 고치면 오른쪽 명함이 바로 바뀜
+PICTURE: 실시간 미리보기 명함과 큰 단가 숫자
+COLOUR and TYPE: 흰 바탕, 먹색, 초록 포인트(사람 전문가 표시색) / Gothic A1 + Noto Sans KR
+LAYOUT: 편집 폼 | 미리보기, 휴대폰에서는 미리보기 먼저
+*/
+:root{color-scheme:light dark;--bg:light-dark(#fff,#0f1117);--ink:light-dark(#16171d,#eef0f6);--mute:light-dark(#5d6170,#a3a8b8);--line:light-dark(#e2e4ec,#272b38);--pri:light-dark(#2d45e8,#7d8dff);--pri-ink:light-dark(#fff,#0f1117);--side:light-dark(#f3f4f8,#161922);--card:light-dark(#fff,#1a1d28);--hx:#06a77d;--err:#d1453b}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Noto Sans KR",system-ui,sans-serif}
+h1,h2,h3{font-family:"Gothic A1",sans-serif;margin:0;line-height:1.15}
+button,input,textarea{font:inherit;color:inherit}
+:focus-visible{outline:3px solid #ffc531;outline-offset:2px}
+.wrap{max-width:1040px;margin:0 auto;padding:clamp(20px,4vw,48px) max(5vw,16px)}
+header.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+h1{font-size:clamp(26px,4vw,36px);font-weight:800}
+h2{font-size:20px;font-weight:800;margin:36px 0 12px}
+.lead{color:var(--mute);margin:6px 0 0}
+.cols{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:28px;margin-top:24px;align-items:start}
+label{display:block;font-size:14px;font-weight:500;margin:14px 0 6px}
+.hint{font-size:13px;color:var(--mute);margin-top:4px}
+.field{width:100%;min-height:44px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);padding:10px 12px;font-size:16px}
+textarea.field{min-height:110px;resize:vertical}
+.rate{display:flex;align-items:center;gap:10px}.rate .field{max-width:140px;font:800 24px "Gothic A1";text-align:right}
+.switch{display:flex;align-items:center;gap:10px;min-height:44px;margin-top:14px;cursor:pointer}
+.switch input{width:22px;height:22px;accent-color:var(--hx)}
+.btn{min-height:44px;padding:0 18px;border-radius:22px;border:0;background:var(--pri);color:var(--pri-ink);font-weight:700;cursor:pointer;white-space:nowrap}
+.btn.ghost{background:none;border:1.5px solid var(--line);color:var(--ink)}
+.msg{font-size:14px;min-height:20px;color:var(--mute);margin-top:8px}.msg.err{color:var(--err)}
+.preview{position:sticky;top:20px}
+.namecard{border-radius:22px;padding:22px;background:var(--card);border:1.5px solid var(--line);box-shadow:0 18px 40px -24px rgb(0 0 0/.35)}
+.namecard .row{display:flex;gap:12px;align-items:center}
+.av{width:52px;height:52px;border-radius:50%;background:var(--hx);color:#fff;display:grid;place-items:center;font:800 20px "Gothic A1";flex:none}
+.namecard h3{font-size:21px}.namecard .f{color:var(--mute);font-size:14px}
+.namecard .price{margin:18px 0 6px;display:flex;align-items:baseline;gap:6px}
+.namecard .price b{font:800 46px/1 "Gothic A1";color:var(--hx);font-variant-numeric:tabular-nums}
+.namecard p{margin:8px 0 0;white-space:pre-wrap;font-size:15px}
+.namecard .sub{font-size:13px;color:var(--mute);margin-top:14px}
+.state{display:inline-block;font-size:12px;padding:3px 10px;border-radius:10px;background:light-dark(#e3f6ee,#12352a);color:light-dark(#06784f,#6fe0b0)}
+.state.off{background:var(--side);color:var(--mute)}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}
+.stats div{background:var(--side);border-radius:14px;padding:12px 14px}.stats span{font-size:13px;color:var(--mute);display:block}.stats b{font:800 26px "Gothic A1";font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th{text-align:left;font-size:13px;color:var(--mute);font-weight:500;border-bottom:1.5px solid var(--line);padding:8px 6px}
+td{border-bottom:1px solid var(--line);padding:10px 6px}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.login{max-width:400px;margin:12vh auto;padding:0 16px}
+.empty{color:var(--mute);padding:12px 6px}
+@media(max-width:760px){.cols{grid-template-columns:minmax(0,1fr)}.preview{position:static;order:-1}}
+@media(max-width:600px){table{font-size:13px}.stack thead{display:none}.stack tr{display:grid;padding-block:10px;border-bottom:1px solid var(--line)}.stack td{display:flow-root;border:0;padding:3px 0;padding-inline-start:7em;text-align:start}.stack td::before{content:attr(data-l);float:inline-start;width:6.5em;margin-inline-start:-7em;color:var(--mute)}.stack td:empty{display:none}}
+</style>
+<script>new MutationObserver(()=>{for(const c of document.querySelectorAll('.stack td:not([data-l])')){let i=0,p=c;while(p=p.previousElementSibling)i+=p.colSpan;c.dataset.l=c.closest('table').rows[0].cells[i]?.textContent||''}}).observe(document,{childList:true,subtree:true})</script>
+</head>
+<body>
+<div id="login" class="login" hidden>
+ <h1>전문가 로그인</h1>
+ <p class="lead">텔레그램에서 함께봇에게 <b>/login</b>을 보내면 10분짜리 코드가 와요.</p>
+ <form id="loginForm" style="margin-top:20px">
+  <label for="code">로그인 코드</label>
+  <input class="field" id="code" autocomplete="one-time-code" autocapitalize="characters" required>
+  <div style="margin-top:12px"><button class="btn">들어가기</button></div>
+  <div class="msg err" id="loginMsg"></div>
+ </form>
+</div>
+
+<div id="main" class="wrap" hidden>
+ <header class="top">
+  <div><h1>전문가 프로필</h1><p class="lead">기업은 이 프로필과 시간당 토큰을 보고 전문가를 골라 호출해요.</p></div>
+  <button class="btn ghost" id="logout" type="button">로그아웃</button>
+ </header>
+ <div class="cols">
+  <form id="pf">
+   <label for="pName">이름</label><input class="field" id="pName" required maxlength="30">
+   <label for="pField">분야</label><input class="field" id="pField" required maxlength="40" placeholder="예: 세무사 · 사회적기업 회계">
+   <label for="pDesc">한 줄 소개</label><input class="field" id="pDesc" maxlength="200" placeholder="예: 인건비 지원금 정산을 쉽게 풀어 드려요">
+   <label for="pCareer">경력·자격</label><textarea class="field" id="pCareer" maxlength="1500" placeholder="예:&#10;세무사 (자격 취득 연도)&#10;사회적기업 회계 자문 ○년"></textarea>
+   <div class="hint">기업이 확인할 수 있는 사실만 적어 주세요. 과장된 실적·수치는 신뢰를 떨어뜨려요.</div>
+   <label for="pHours">상담 가능 시간</label><input class="field" id="pHours" maxlength="200" placeholder="예: 평일 오후 2~6시, 답장은 당일 안에">
+   <label for="pRate">시간당 토큰</label>
+   <div class="rate"><input class="field" id="pRate" type="number" inputmode="numeric" min="1" step="1" required><span>토큰 / 1시간</span></div>
+   <div class="hint" id="rateHint">상담 시간(호출~종료) × 단가로 계산해 기업에 안내해요. 30분이면 절반, 1개 미만은 올려서 1개. 실제로 보낼 수량은 기업이 정해요.</div>
+   <label class="switch"><input type="checkbox" id="pAvail"> 지금 상담 받기</label>
+   <div style="margin-top:18px"><button class="btn">저장</button></div>
+   <div class="msg" id="pMsg"></div>
+  </form>
+  <aside class="preview" aria-label="기업에 보이는 모습">
+   <div class="hint" style="margin-bottom:8px">기업에 이렇게 보여요</div>
+   <div class="namecard" id="card"></div>
+   <div class="stats"><div><span>받은 토큰 잔액</span><b id="bal">0</b></div><div><span>진행 중인 상담</span><b id="act">0</b></div></div>
+  </aside>
+ </div>
+
+ <h2>받은 토큰 기록</h2>
+ <table class="stack"><thead><tr><th>일시</th><th>구분</th><th>기업</th><th class="num">상담 시간</th><th class="num">토큰</th></tr></thead><tbody id="rec"></tbody></table>
+</div>
+
+<script>
+{
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const api=async(p,b)=>{const r=await fetch(p,{method:b?'POST':'GET',headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({error:'응답 오류'}));if(r.status===401&&p!=='/api/expert/login'){showLogin();throw new Error('login')}return j};
+const when=t=>new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+function showLogin(m){$('main').hidden=true;$('login').hidden=false;$('loginMsg').textContent=m||'';$('code').focus()}
+function preview(){
+ const r=+$('pRate').value, on=$('pAvail').checked, name=$('pName').value||'이름';
+ $('card').innerHTML=`<div class="row"><div class="av">${esc(name.slice(0,1))}</div><div><h3>${esc(name)}</h3><div class="f">${esc($('pField').value||'분야')}</div></div></div>
+  <div class="price"><b>${Number.isInteger(r)&&r>0?r:'—'}</b><span>토큰 / 1시간</span></div>
+  <span class="state ${on?'':'off'}">${on?'상담 가능':'지금은 상담 불가'}</span>
+  ${$('pDesc').value?`<p>${esc($('pDesc').value)}</p>`:''}
+  ${$('pCareer').value?`<p style="color:var(--mute)">${esc($('pCareer').value)}</p>`:''}
+  ${$('pHours').value?`<div class="sub">상담 가능 시간 · ${esc($('pHours').value)}</div>`:''}`;
+}
+async function load(){
+ const d=await api('/api/expert/state');
+ $('login').hidden=true;$('main').hidden=false;
+ const p=d.profile;
+ $('pName').value=p.name||'';$('pField').value=p.field||'';$('pDesc').value=p.desc||'';$('pCareer').value=p.career||'';$('pHours').value=p.hours||'';$('pRate').value=p.rate||'';$('pRate').max=d.rateMax;$('pAvail').checked=!!p.available;
+ $('bal').textContent=(p.balance||0).toLocaleString();$('act').textContent=d.active.length;
+ if(!p.rate)$('pMsg').textContent='시간당 토큰을 정하고 저장해야 기업 목록에 보여요.';
+ const T={pay:'상담 토큰 받음',payout:'운영자 정산'};
+ $('rec').innerHTML=d.received.length?d.received.map(l=>`<tr><td>${when(l.at)}</td><td>${T[l.type]||l.type}</td><td>${esc(l.orgName)}${l.memo?` <span style="color:var(--mute)">“${esc(l.memo)}”</span>`:''}</td><td class="num">${l.minutes?l.minutes+'분':''}</td><td class="num">${l.type==='payout'?'−':'+'}${l.amount.toLocaleString()}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">아직 기록이 없어요.</td></tr>';
+ preview();
+}
+$('pf').addEventListener('input',preview);
+$('pf').addEventListener('submit',async e=>{e.preventDefault();
+ const j=await api('/api/expert/profile',{name:$('pName').value,field:$('pField').value,desc:$('pDesc').value,career:$('pCareer').value,hours:$('pHours').value,rate:+$('pRate').value,available:$('pAvail').checked});
+ $('pMsg').className='msg'+(j.error?' err':'');$('pMsg').textContent=j.error||'저장했어요. 기업 목록에 바로 반영돼요. 진행 중인 상담은 호출 때 단가가 그대로 적용돼요.';
+});
+$('loginForm').addEventListener('submit',async e=>{e.preventDefault();const j=await api('/api/expert/login',{code:$('code').value.trim()});if(j.error){$('loginMsg').textContent=j.error;return}history.replaceState(null,'','/expert');load().catch(()=>{})});
+$('logout').onclick=async()=>{await api('/api/expert/logout',{}).catch(()=>{});showLogin('로그아웃했어요.')};
+const qc=new URLSearchParams(location.search).get('code');
+if(qc){$('code').value=qc}
+load().catch(()=>{if(qc)$('loginForm').requestSubmit()});
+}
+</script>
+</body>
+</html>
