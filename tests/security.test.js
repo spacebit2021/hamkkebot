@@ -8,18 +8,26 @@ const chk = (n, c) => { if (!c) FAILS++; console.log((c ? 'PASS ' : 'FAIL ') + n
 const SITE = 'https://93.184.216.34', T0 = new Date(Date.now() + 9 * 36e5).toISOString().slice(0, 10);
 const at = (d, hm) => String(Date.parse(`${d}T${hm}:00+09:00`)), next = d => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10);
 // 가짜 사이트 상태 (점검 사이에 바꿈)
-const W = { token: '', headers: { server: 'Apache/2.4.29', 'set-cookie': 'sid=abc; Path=/' }, body: '<html><img src="http://cdn.example.org/a.png"></html>', git: true, redirect: false };
+const W = { token: '', headers: { server: 'Apache/2.4.29', 'set-cookie': 'sid=abc; Path=/' }, body: '<html><img src="http://cdn.example.org/a.png"></html>', git: true, redirect: false, deep: false, serverStatus: true, panel: true, errLeak: true, methods: true, cors: true };
 let aiFail = false; const prompts = [];
 const resp = (status, headers = {}, body = '') => ({ status, ok: status < 300, headers: { get: k => headers[k.toLowerCase()] == null ? null : headers[k.toLowerCase()], getSetCookie: () => headers['set-cookie'] ? [headers['set-cookie']] : [] }, text: async () => body });
 global.fetch = async (url, opt = {}) => {
   const u = String(url);
   if (u.includes('/v1/messages')) { prompts.push(JSON.parse(opt.body)); return aiFail ? { ok: false, status: 500, json: async () => ({}) } : { ok: true, status: 200, json: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: '요약: 인증서는 괜찮지만 보안 헤더가 빠져 있어요. 먼저 .git 폴더 접근을 막으세요.' }] }) }; }
   if (u === 'http://93.184.216.34/') return W.redirect ? resp(301, { location: 'https://93.184.216.34/' }) : resp(200, {}, 'plain');
+  if (u === SITE + '/' && opt.method === 'OPTIONS') return resp(200, W.deep && W.methods ? { allow: 'GET, POST, PUT, DELETE, OPTIONS' } : { allow: 'GET, POST, OPTIONS' });
+  if (u === SITE + '/' && opt.headers && opt.headers.origin) return resp(200, W.deep && W.cors ? { ...W.headers, 'access-control-allow-origin': opt.headers.origin, 'access-control-allow-credentials': 'true' } : W.headers, '');
   if (u === SITE + '/') return resp(200, W.headers, W.body);
   if (u === SITE + '/.well-known/hamkkebot-verify.txt') return W.token ? resp(200, {}, W.token) : resp(404);
   if (u === SITE + '/.git/HEAD') return W.git ? resp(200, {}, 'ref: refs/heads/main\n') : resp(404);
   if (u === SITE + '/.env') return resp(404);
   if (u === SITE + '/.well-known/security.txt') return resp(404);
+  if (u === SITE + '/.git/config') return resp(404);
+  if (u === SITE + '/server-status') return W.deep && W.serverStatus ? resp(200, {}, 'Apache Server Status for example\nServer uptime: 10 days') : resp(404);
+  if (u === SITE + '/wp-admin/') return W.deep && W.panel ? resp(200, {}, '<html>wp-login</html>') : resp(404);
+  if (u.startsWith(SITE + '/hb-check-')) return W.deep && W.errLeak ? resp(500, {}, 'Traceback (most recent call last):\n  File app.py line 42') : resp(404, {}, 'Not found');
+  if (u.startsWith(SITE + '/uploads/') || u.startsWith(SITE + '/images/') || u.startsWith(SITE + '/files/') || u.startsWith(SITE + '/backup/')) return resp(404);
+  if (/93\.184\.216\.34\/(\.env\.|\.svn|wp-config|config\.php|\.DS_Store|phpinfo|\.htaccess|backup\.sql|administrator|admin\/|phpmyadmin)/.test(u)) return resp(404);
   if (u.startsWith('https://93.184.216.35')) return resp(200, {}, '');
   return { ok: true, status: 200, json: async () => ({ ok: true, result: {} }) };
 };
@@ -94,6 +102,18 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   // 시각 변경·목록·삭제
   chk('점검 시각 변경', (await say('A', '점검 시각 7시')).includes('매일 7시'));
   chk('사이트 목록: 인증 상태·지난 등급', (await say('A', '사이트 목록 보여 줘')).includes('인증됨 · 지난 점검'));
+  // 긴급 심화 점검: 확인 없이는 실행 안 함
+  W.deep = true;
+  chk('긴급 심화 점검은 먼저 확인을 요구 (토큰 안 씀)', await (async () => { const w = await Wl('A'); await Ad(`/api/admin/orgs/${(await Ad('/api/admin/state')).j.orgs.find(o => o.name === '마을빵공방').id}/charge`, { amount: 100 }); const w2 = await Wl('A'); const t2 = await say('A', '긴급 심화 점검'); return t2.includes('긴급 심화 점검 확인') && t2.includes('공격·로그인 시도·부하는 하지 않아요') && await Wl('A') === w2; })());
+  const wd = await Wl('A');
+  await U.A(`/api/rooms/${room.A}/messages`, { text: '긴급 심화 점검 확인', to: 'security' }); await sl(600);
+  const dmsg = (await msgs('A')).filter(m => m.from === 'security').pop();
+  chk('확인하면 심화 점검 실행 (20토큰)', dmsg.text.startsWith('[보안 점검 · 심화]') && await Wl('A') === wd - 20 && dmsg.cost === 20);
+  const dv = (await U.A('/api/bboard?bot=security')).j.posts[0].values;
+  chk('심화 점검 결과: 능동 점검으로 찾은 것 (server-status·관리자 페이지·위험 메서드·오류 노출·CORS)', dv.grade.includes('심화 점검') && ['server-status', '관리자·로그인 페이지', 'HTTP 메서드', '서버 내부 정보가 보여요', 'CORS'].some(k => dv.findings.includes(k)) && dv.findings.includes('server-status') && dv.findings.includes('CORS'));
+  chk('심화 점검도 소유 인증 안 된 사이트엔 안 함', (await say('B', '긴급 심화 점검')).includes('소유 인증') || (await say('B', '긴급 심화 점검')).includes('등록된 사이트가 없어요'));
+  for (let i = 0; i < 2; i++) { await U.A(`/api/rooms/${room.A}/messages`, { text: '긴급 심화 점검 확인', to: 'security' }); await sl(400); }
+  chk('심화 점검은 하루 3번까지', (await say('A', '긴급 심화 점검 확인')).includes('내일 다시'));
   chk('사이트 삭제', (await say('A', `${SITE} 삭제`)).includes('점검 목록에서 뺐어요') && (await say('A', '사이트 목록')).includes('등록된 사이트가 없어요'));
   process.exit(FAILS ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

@@ -21,7 +21,7 @@ async function get(url, opt = {}) {
     const c = await MARKET.checkUrl(cur); if (c.error) return { error: c.error };
     const ac = new AbortController(), t = setTimeout(() => ac.abort(), opt.timeout || 10000);
     let r;
-    try { r = await fetch(cur, { redirect: 'manual', signal: ac.signal, headers: { 'user-agent': UA, accept: 'text/html,*/*' } }); }
+    try { r = await fetch(cur, { method: opt.method || 'GET', redirect: 'manual', signal: ac.signal, headers: { 'user-agent': UA, accept: 'text/html,*/*', ...(opt.headers || {}) } }); }
     catch (e) { clearTimeout(t); return { error: e.name === 'AbortError' ? '응답이 10초 넘게 없어요' : '접속하지 못했어요' }; }
     clearTimeout(t);
     const loc = r.headers.get('location');
@@ -45,10 +45,10 @@ const io = {
 };
 
 const hasVer = v => /\d/.test(v || '');
-async function scan(site, verified) {
+async function scan(site, verified, opt = {}) {
   const F = [], add = (id, level, title, detail, fix) => F.push({ id, level, title, detail, fix });
   const u = new URL(site), https = u.protocol === 'https:';
-  const r = { site, at: Date.now(), https, findings: F };
+  const r = { site, at: Date.now(), https, deep: !!opt.deep, findings: F };
   const ck = await MARKET.checkUrl(site + '/'); // 내부망 주소는 점검하지 않음 (인증서 확인 전에)
   if (ck.error) { add('blocked', 'high', '점검할 수 없는 주소예요', ck.error, '공개된 사이트 주소인지 확인해 주세요.'); return finish(r); }
   if (https) {
@@ -100,6 +100,8 @@ async function scan(site, verified) {
       ['/.env', b => /^[A-Z0-9_]+=.+/m.test(b), '.env 설정 파일이 밖에서 열려요', 'DB 비밀번호·API 키가 보일 수 있어요', '파일 접근을 막고, 그 안의 비밀번호·키를 모두 바꿔 주세요.']];
     for (const [p, test, title, detail, fix] of probe) { const x = await io.get(site + p, { follow: false }); if (!x.error && x.status === 200 && test(x.body)) add('exposed_' + p.replace(/\W/g, ''), 'high', title, detail, fix); }
   }
+  // 심화(긴급) 점검: 겉을 더 깊이 보는 능동 점검. 공격 페이로드·로그인 시도·부하는 하지 않음 (GET·OPTIONS만)
+  if (opt.deep && verified) await deepProbe(site, add);
   return finish(r);
 }
 function finish(r) {
@@ -120,6 +122,37 @@ async function verify(site, token) {
   const h = await io.get(site + '/');
   if (!h.error && new RegExp(`<meta[^>]+name=["']hamkkebot-verify["'][^>]+content=["']${token}["']`, 'i').test(h.body)) return { ok: true, how: 'meta' };
   return { ok: false, error: h.error || f.error || null };
+}
+
+// 심화 점검용: 밖에서 열리면 안 되는 민감 파일·백업 (GET으로 존재와 내용 특징만 확인)
+const DEEP_FILES = [
+  ['/.env.bak', b => /^[A-Z0-9_]+=.+/m.test(b), 'high', '.env 백업 파일이 열려요'],
+  ['/.env.save', b => /^[A-Z0-9_]+=.+/m.test(b), 'high', '.env 백업 파일이 열려요'],
+  ['/wp-config.php.bak', b => /DB_(PASSWORD|NAME|USER)/.test(b), 'high', 'wp-config 백업이 열려요'],
+  ['/config.php.bak', b => /password|db|secret/i.test(b), 'high', '설정 파일 백업이 열려요'],
+  ['/.svn/entries', b => /svn|dir|\d+/.test(b) && b.length < 2000, 'high', 'SVN 저장소(.svn)가 열려요'],
+  ['/.DS_Store', b => b.includes('Bud1') || /\u0000/.test(b), 'low', '.DS_Store 파일이 열려요 (폴더·파일 이름이 샐 수 있어요)'],
+  ['/server-status', b => /Apache Server Status|Server uptime/i.test(b), 'mid', 'server-status 페이지가 열려요 (접속 정보가 보여요)'],
+  ['/phpinfo.php', b => /phpinfo\(\)|PHP Version/i.test(b), 'high', 'phpinfo 페이지가 열려요 (서버 설정이 전부 보여요)'],
+  ['/.htaccess', b => /RewriteEngine|Order |Deny /i.test(b), 'mid', '.htaccess 파일이 열려요'],
+  ['/backup.sql', b => /INSERT INTO|CREATE TABLE/i.test(b), 'high', 'DB 백업(backup.sql)이 열려요']
+];
+const PANELS = [['/wp-admin/', /wp-login|wordpress/i], ['/administrator/', /joomla|administrator/i], ['/admin/', /login|password|관리/i], ['/phpmyadmin/', /phpmyadmin/i]];
+async function deepProbe(site, add) {
+  for (const [p, test, level, title] of DEEP_FILES) { const x = await io.get(site + p, { follow: false }); if (!x.error && x.status === 200 && test(String(x.body))) add('deep_' + p.replace(/\W/g, ''), level, title, '', '웹 서버에서 이 파일 접근을 막고, 안에 있던 비밀번호·키를 모두 바꿔 주세요.'); }
+  // 디렉터리 목록이 열려 있는지
+  for (const d of ['/uploads/', '/images/', '/files/', '/backup/']) { const x = await io.get(site + d, { follow: false }); if (!x.error && x.status === 200 && /<title>Index of|Directory listing for/i.test(String(x.body))) add('dirlist_' + d.replace(/\W/g, ''), 'mid', `폴더 목록이 열려 있어요 (${d})`, '안에 있는 파일 이름이 모두 보여요', '웹 서버에서 디렉터리 목록(autoindex)을 꺼 주세요.'); }
+  // 위험한 HTTP 메서드 (OPTIONS로 확인만)
+  const o = await io.get(site + '/', { method: 'OPTIONS', body: false, follow: false });
+  if (!o.error && o.headers) { const allow = (o.headers.get('allow') || '').toUpperCase(); const bad = ['PUT', 'DELETE', 'TRACE', 'CONNECT'].filter(m => allow.includes(m)); if (bad.length) add('methods', 'mid', `위험할 수 있는 HTTP 메서드가 켜져 있어요 (${bad.join(', ')})`, '', '쓰지 않는 메서드(PUT·DELETE·TRACE)는 서버에서 막아 주세요.'); }
+  // 관리자·로그인 페이지 노출 (있는지만 확인, 로그인 시도 안 함)
+  for (const [p, sig] of PANELS) { const x = await io.get(site + p, { follow: false }); if (!x.error && x.status === 200 && sig.test(String(x.body))) { add('panel_' + p.replace(/\W/g, ''), 'info', `관리자·로그인 페이지가 열려 있어요 (${p})`, '', '접근 IP 제한이나 2단계 인증을 두면 좋아요.'); break; } }
+  // 오류 페이지에 내부 정보가 새는지 (없는 주소를 요청해 확인)
+  const err = await io.get(site + '/hb-check-' + Math.random().toString(36).slice(2, 10), { follow: false });
+  if (!err.error && /Traceback \(most recent|Exception|Fatal error|Warning:|SQLSTATE|at java\.|ORA-\d|stack trace|DEBUG = True/i.test(String(err.body).slice(0, 20000))) add('error_leak', 'mid', '오류 페이지에 서버 내부 정보가 보여요', '코드·경로·DB 오류가 공격 단서가 될 수 있어요', '오류 화면을 간단한 안내로 바꾸고, 운영에서는 디버그 모드를 꺼 주세요.');
+  // CORS 설정이 위험한지
+  const cors = await io.get(site + '/', { headers: { origin: 'https://hb-cors-test.example' }, body: false, follow: false });
+  if (!cors.error && cors.headers) { const acao = cors.headers.get('access-control-allow-origin'), cred = /true/i.test(cors.headers.get('access-control-allow-credentials') || ''); if (acao === 'https://hb-cors-test.example' && cred) add('cors', 'high', '아무 사이트나 우리 API를 쓸 수 있게 열려 있어요 (CORS)', '다른 사이트가 로그인된 사용자 정보를 가져갈 수 있어요', '허용할 출처만 지정하고, credentials를 함께 허용하지 마세요.'); else if (acao === '*') add('cors_any', 'low', 'CORS가 모든 출처에 열려 있어요 (*)', '', '공개 API가 아니면 허용 출처를 좁혀 주세요.'); }
 }
 
 module.exports = { normSite, scan, verify, io, LEVEL, findingsText, countLine };

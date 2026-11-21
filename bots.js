@@ -129,7 +129,7 @@ module.exports = [
     hello: '안녕하세요, 보안 봇이에요. "사이트 등록 https://우리사이트.kr"이라고 보내면 소유 인증 방법을 알려 드려요. 인증한 사이트만 점검하고, 매일 정한 시각에 자동으로 점검해 결과를 「보안 점검 기록」 게시판에 남겨요. 바로 보려면 "지금 점검해 줘"라고 하세요.',
     quick: ['사이트 등록 https://', '사이트 인증 확인해 줘', '지금 점검해 줘', '사이트 목록 보여 줘'],
     cost: 0,
-    extraCosts: [{ id: 'security_scan', name: '보안 봇 사이트 점검 (사이트당 1회)', def: 3 }],
+    extraCosts: [{ id: 'security_scan', name: '보안 봇 사이트 점검 (사이트당 1회)', def: 3 }, { id: 'security_deep', name: '보안 봇 긴급 심화 점검 (사이트당 1회)', def: 20 }],
     board: { name: '보안 점검 기록', desc: '보안 봇이 매일 남기는 점검 결과예요. 우리 기업 안에서만 봐요.', visibility: 'own', fields: [{ key: 'site', label: '사이트', type: 'text', required: true }, { key: 'day', label: '점검 날짜', type: 'date' }, { key: 'grade', label: '등급', type: 'text' }, { key: 'summary', label: '요약', type: 'textarea' }, { key: 'changes', label: '지난 점검과 비교', type: 'textarea' }, { key: 'findings', label: '발견한 점과 고칠 방법', type: 'textarea' }], action: null, consent: false, consentText: '' },
     role: `당신은 한국 사회적기업의 웹사이트 보안 점검 결과를 쉬운 말로 설명하는 보안 도우미입니다.
 - 점검 결과에 있는 사실만 말하세요. 결과에 없는 취약점·해킹 여부·피해를 짐작하거나 지어내지 마세요.

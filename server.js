@@ -429,7 +429,7 @@ async function runBot(room, botId, text, ctx = {}) {
   else if (bot.kind === 'sched') { const mode = schedMode(text); costId = mode === 'detail' ? 'sched_detail' : mode === 'ppt' ? 'sched_ppt' : 'sched'; run = () => runSchedBot(bot, room, org, text, mode, ctx); }
   else if (bot.kind === 'todo') { const mode = ctx.auto ? 'review' : todoMode(text); costId = mode === 'review' ? 'todo_review' : mode === 'detail' ? 'todo_detail' : mode === 'ppt' ? 'todo_ppt' : 'todo'; run = () => runSchedBot(bot, room, org, text, mode, ctx, 'todo'); }
   else if (bot.kind === 'talent') run = () => runTalentBot(bot, room, org, text, ctx);
-  else if (bot.kind === 'security') { costId = ctx.site ? 'security_scan' : 'free'; run = () => runSecurityBot(bot, room, org, text, ctx); } // 사이트 등록·인증·목록은 무료, 점검만 토큰
+  else if (bot.kind === 'security') { costId = ctx.site ? (ctx.deep ? 'security_deep' : 'security_scan') : 'free'; run = () => runSecurityBot(bot, room, org, text, ctx); } // 사이트 등록·인증·목록은 무료, 점검만 토큰
   else if (bot.kind === 'ir') { const mode = irMode(org, text); costId = mode === 'create' ? 'ir' : mode === 'vc' ? 'ir_vc' : 'ir_update'; run = () => runIrBot(bot, room, org, text, mode); }
   else if (isDeck) { costId = bot.custom ? 'custom_ppt' : `${bot.id}_ppt`; run = () => runDeckBot(bot, room, org, text); }
   else run = () => askClaude(bot, room, text);
@@ -1375,7 +1375,7 @@ const body = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c
 // ---------- 보안 봇 ----------
 // 소유를 인증한 사이트만 점검. 매일 정한 시각에 자동, 결과는 「보안 점검 기록」(우리 기업만 보는 봇 게시판)에
 const secList = org => S.secSites[org.id] || (S.secSites[org.id] = []);
-const SEC_HELP = '· "사이트 등록 https://우리사이트.kr" — 사이트 추가 (최대 5곳)\n· "사이트 인증 확인해 줘" — 소유 인증 확인\n· "지금 점검해 줘" — 바로 점검 (사이트당 하루 5번까지)\n· "점검 시각 7시" — 매일 자동 점검 시각 (한국 시간)\n· "사이트 목록" · "https://… 삭제"';
+const SEC_HELP = '· "사이트 등록 https://우리사이트.kr" — 사이트 추가 (최대 5곳)\n· "사이트 인증 확인해 줘" — 소유 인증 확인\n· "지금 점검해 줘" — 바로 점검 (사이트당 하루 5번까지)\n· "긴급 심화 점검" — 겉을 더 깊이 보는 능동 점검 (토큰을 더 써요, 확인 필요)\n· "점검 시각 7시" — 매일 자동 점검 시각 (한국 시간)\n· "사이트 목록" · "https://… 삭제"';
 async function runSecurityBot(bot, room, org, text, ctx) {
   const list = secList(org);
   if (ctx.site) return runSecScan(bot, room, org, ctx);
@@ -1406,6 +1406,17 @@ async function runSecurityBot(bot, room, org, text, ctx) {
     for (const x of list) x.hour = hr; save();
     return { free: true, text: `매일 ${hr}시(한국 시간)에 인증된 사이트를 자동으로 점검할게요.` };
   }
+  // 긴급 심화 점검: 공격은 하지 않는 더 깊은 능동 점검. 토큰을 많이 써서 두 단계로 확인
+  if (/심화|긴급/.test(text) && /점검|검사|스캔/.test(text)) {
+    const targets = list.filter(x => x.verified && (!site || x.site === site)), today = todayKst(), cost = costOf('security_deep');
+    if (!targets.length) return { free: true, text: list.length ? '아직 소유 인증된 사이트가 없어요. 인증부터 해 주세요.' : '등록된 사이트가 없어요.' };
+    if (!/확인|ok|예스|yes|진행/i.test(text)) return { free: true, text: `긴급 심화 점검은 겉을 더 깊이 보는 점검이에요 (숨은 민감 파일·백업, 폴더 목록 노출, 위험한 HTTP 메서드, 관리자 페이지 노출, 오류 정보 노출, CORS). 공격·로그인 시도·부하는 하지 않아요.\n사이트당 ${cost}토큰을 써요 (${targets.map(x => x.site).join(', ')}).\n진행하려면 "긴급 심화 점검 확인"이라고 보내 주세요.` };
+    const go = [], skip = [];
+    for (const x of targets) { x.deepManual = x.deepManual && x.deepManual.day === today ? x.deepManual : { day: today, n: 0 }; if (x.deepManual.n >= 3) skip.push(x.site); else { x.deepManual.n++; go.push(x.site); } }
+    save();
+    for (const st of go) setTimeout(() => runBot(room, 'security', '심화 점검 ' + st, { site: st, deep: true, author: ctx.author }), 0);
+    return { free: true, text: `${go.length ? `${go.join(', ')} 긴급 심화 점검을 시작했어요 (사이트당 ${cost}토큰). 시간이 조금 더 걸려요.` : ''}${skip.length ? `\n${skip.join(', ')}은(는) 오늘 심화 점검을 3번 해서 내일 다시 할 수 있어요.` : ''}` };
+  }
   if (/점검|검사|검증|스캔|확인해/.test(text)) {
     const targets = list.filter(x => x.verified && (!site || x.site === site)), today = todayKst();
     if (!targets.length) return { free: true, text: list.length ? '아직 소유 인증된 사이트가 없어요. "사이트 인증 확인해 줘"부터 해 주세요.' : '등록된 사이트가 없어요. "사이트 등록 https://…"부터 해 주세요.' };
@@ -1425,7 +1436,7 @@ const gradeTxt = g => g.grade === '접속 안 됨' ? '접속 안 됨' : `${g.gra
 async function runSecScan(bot, room, org, ctx) {
   const x = secList(org).find(y => y.site === ctx.site);
   if (!x || !x.verified) return { silent: true };
-  const r = await SEC.scan(x.site, true), ids = r.findings.map(f => f.id), prev = x.last;
+  const r = await SEC.scan(x.site, true, { deep: ctx.deep }), ids = r.findings.map(f => f.id), prev = x.last;
   const added = prev ? r.findings.filter(f => !prev.ids.includes(f.id)) : [], fixed = prev ? prev.ids.filter(i => !ids.includes(i)).map(i => (prev.titles || {})[i] || i) : [];
   const changes = !prev ? '첫 점검이에요.' : `${gradeTxt(prev)} → ${gradeTxt(r)}${added.length ? `\n새로 생긴 문제: ${added.map(f => f.title).join(' / ')}` : ''}${fixed.length ? `\n해결된 문제: ${fixed.join(' / ')}` : ''}${!added.length && !fixed.length ? '\n지난 점검과 달라진 점이 없어요.' : ''}`;
   // 쉬운 말 요약 (점검 결과에 있는 사실만). AI가 안 되면 규칙으로 만든 요약
@@ -1434,11 +1445,11 @@ async function runSecScan(bot, room, org, ctx) {
   const ai = await callClaude(`${bot.role}\n\n아래는 ${x.site} 점검 결과예요 (${r.grade}등급, ${r.score}점). 3~5문장으로 요약하고, 가장 먼저 고칠 것 3가지를 순서대로 알려 주세요. 결과에 없는 내용은 쓰지 마세요. 서식은 줄바꿈만.`, JSON.stringify({ 등급: r.grade, 점수: r.score, 지난점검과비교: changes, 결과: brief }).slice(0, 8000), 900);
   summary = ai.error ? `${gradeTxt(r)} · ${SEC.countLine(r)}.${r.findings[0] ? ` 먼저 고칠 것: ${r.findings.slice(0, 3).map(f => f.title).join(' / ')}.` : ' 발견한 문제가 없어요.'}${ai.error ? ' (AI 요약을 만들지 못해 규칙으로 정리했어요)' : ''}` : str(ai.text, 1500);
   const today = todayKst();
-  S.bposts.push({ id: newId('w'), botId: 'security', orgId: org.id, by: ctx.auto ? '보안 봇 (자동)' : (ctx.author || '보안 봇'), at: Date.now(), status: 'open', values: { site: x.site, day: today, grade: `${gradeTxt(r)} · ${SEC.countLine(r)}`, summary, changes, findings: SEC.findingsText(r).slice(0, 2000) }, actions: [], hidden: false });
+  S.bposts.push({ id: newId('w'), botId: 'security', orgId: org.id, by: ctx.auto ? '보안 봇 (자동)' : (ctx.author || '보안 봇'), at: Date.now(), status: 'open', values: { site: x.site, day: today, grade: `${gradeTxt(r)} · ${SEC.countLine(r)}${ctx.deep ? ' · 심화 점검' : ''}`, summary, changes, findings: SEC.findingsText(r).slice(0, 2000) }, actions: [], hidden: false });
   x.last = { ids, titles: Object.fromEntries(r.findings.map(f => [f.id, f.title])), grade: r.grade, score: r.score, at: Date.now(), counts: r.counts };
   save(); emit('board', { board: 'bot:security' }, org.id);
   const top = r.findings.filter(f => f.level === 'high' || f.level === 'mid').slice(0, 3);
-  return { text: `[보안 점검${ctx.auto ? ' · 자동' : ''}] ${x.site}\n${gradeTxt(r)} · ${SEC.countLine(r)}\n${prev ? changes.split('\n')[0] + '\n' : ''}${top.length ? `먼저 고칠 것:\n${top.map(f => `· [${SEC.LEVEL[f.level]}] ${f.title}`).join('\n')}\n` : ''}자세한 내용은 「게시판 → 보안 점검 기록」에 남겼어요. (겉에서 보는 기본 점검이라 모든 취약점을 찾지는 못해요)` };
+  return { text: `[보안 점검${ctx.deep ? ' · 심화' : ctx.auto ? ' · 자동' : ''}] ${x.site}\n${gradeTxt(r)} · ${SEC.countLine(r)}\n${prev ? changes.split('\n')[0] + '\n' : ''}${top.length ? `먼저 고칠 것:\n${top.map(f => `· [${SEC.LEVEL[f.level]}] ${f.title}`).join('\n')}\n` : ''}자세한 내용은 「게시판 → 보안 점검 기록」에 남겼어요. (겉에서 보는 ${ctx.deep ? '능동 점검' : '기본 점검'}이라 모든 취약점을 찾지는 못해요)` };
 }
 // 매분: 정한 시각이 지나면 인증된 사이트를 하루 한 번 자동 점검
 async function secTick() {
