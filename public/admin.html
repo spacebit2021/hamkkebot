@@ -202,7 +202,7 @@ let BF='wait';
 const wt=t=>new Date(t+9*36e5).toISOString().slice(5,16).replace('T',' ');
 function renderChain(){const C=D.chain;if(!C)return;if(document.activeElement&&document.activeElement.closest('#chainBox'))return;
  $('chainBox').innerHTML=`<div class="head"><h3>${esc(C.chain)} · ${esc(C.token.symbol)}</h3><span class="msg">어댑터 ${esc(C.adapter)} · 블록 ${C.blockNumber}</span></div>
- <div class="msg"><b>운영 기관 지갑</b> <code>${esc(C.treasury.address)}</code> · 잔액 ${C.treasury.wallet.toLocaleString()} · 환전 가능(운영 기관 몫) ${C.treasury.exchangeable.toLocaleString()} — 환전은 충전·환전 페이지 운영자 화면에서</div>
+ <div class="msg"><b>운영 기관 지갑</b> <code>${esc(C.treasury.address)}</code> · 잔액 ${C.treasury.wallet.toLocaleString()} · 출금 가능 ${C.treasury.exchangeable.toLocaleString()} (운영 기관 몫 + 봇 사용료, 무제한 토큰으로 쓴 사용료 제외) — 출금은 충전·환전 페이지 운영자 화면에서</div>
  <div class="msg"><b>발행량 검사</b> 발행 ${C.supply.minted.toLocaleString()} − 소각 ${C.supply.burned.toLocaleString()} = ${C.supply.supply.toLocaleString()} · 모든 지갑 합 ${C.supply.held.toLocaleString()} ${C.supply.ok?'<span class="tag on">일치</span>':'<span class="tag" style="color:#b42318">불일치 — 확인 필요</span>'}</div>
  <div class="msg"><b>체인 준비금</b> 체인 충전 ${C.supply.chain.minted.toLocaleString()} − 체인 환전 ${C.supply.chain.burned.toLocaleString()} = <b>${C.supply.chain.reserve.toLocaleString()}</b> · 함께봇 안에서만 생긴 토큰(관리자 지급·무제한 등) ${C.supply.internalOnly.toLocaleString()} — 환전은 준비금 안에서만 돼요. 블록에는 충전·환전만 담기고, 함께봇 안의 이동은 내부 장부에만 남아요.</div>
  <div class="msg">충전·환전 페이지 주소: ${C.portalUrl?`<a href="${esc(C.portalUrl)}" target="_blank" rel="noopener">${esc(C.portalUrl)}</a>`:'<b>설정 안 됨</b> (서버에 CHARGE_PORTAL_URL을 넣어 주세요)'}</div>

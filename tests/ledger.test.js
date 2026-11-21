@@ -52,7 +52,7 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   chk('봇 사용료는 운영 기관 지갑으로 이동', c.treasury.wallet === 1 && c.txs.some(t => t.type === 'transfer' && t.kind === 'reserve' && t.fromName === '마을빵공방' && t.orgName === '운영 기관'));
   fail = true; await U.A(`/api/rooms/${room.A}/messages`, { text: '또', to: 'mkt' }); await sl(120); fail = false;
   c = await ok('AI 실패 환불');
-  chk('실패하면 운영 기관 지갑에서 돌려줌', c.treasury.wallet === 1 && (await W('A')) === 99 && (await kinds()).includes('refund'));
+  chk('실패하면 운영 기관 지갑에서 돌려주고, 출금 가능에도 안 더함', c.treasury.wallet === 1 && c.treasury.exchangeable === 1 && (await W('A')) === 99 && (await kinds()).includes('refund'));
 
   // 무제한 자동 충전
   await Ad(`/api/admin/orgs/${oid.C}/unlimited`, { until: new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10), refillTo: 20 });
@@ -67,7 +67,7 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   await U.A('/api/bots/pricing', { botId: sb.j.id, perUse: 10, passDays: 10, passPrice: 40 }); await U.A('/api/bots/publish', { botId: sb.j.id }); await Ad(`/api/admin/bots/${sb.j.id}/approve`, {});
   await U.B(`/api/rooms/${room.B}/invite`, { botId: sb.j.id }); await U.B(`/api/rooms/${room.B}/messages`, { text: '점검', to: sb.j.id }); await sl(120);
   c = await ok('봇 이용 몫');
-  chk('몫 10 → 만든 기업 9 (운영 기관 지갑에 몫 1 + 사용료 1)', (await W('A')) === 99 + 9 && c.treasury.exchangeable === 1);
+  chk('몫 10 → 만든 기업 9, 운영 기관 출금 가능 = 사용료(마케팅 1 + 세무 1) + 몫 1 (무제한 기업 사용료 제외)', (await W('A')) === 99 + 9 && c.treasury.exchangeable === 3 && c.treasury.wallet === 1 + 1 + 1 + 1);
   await U.E('/api/bots/pass', { botId: sb.j.id });
   OFF += 5 * 864e5; await Ad('/api/admin/login', { password: 'adminpass' }); for (const k in U) await U[k]('/api/login', { loginId: 'org' + k, password: 'password1' });
   await Ad(`/api/admin/bots/${sb.j.id}/discard`, { reason: '시험' });

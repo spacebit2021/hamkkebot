@@ -97,7 +97,9 @@ const afterSpend = org => { if (org.wallet <= 0) ensureFunds(org, 1); }; // 다 
 // 쓰는 토큰은 먼저 운영 기관 지갑으로 옮겨 두고(보관), 실패하면 돌려주고, 나눌 몫은 거기서 받는 쪽으로 보냄
 function reserveTokens(org, n) { if (n <= 0) return true; ensureFunds(org, n); if (org.wallet < n) return false; ledger.transfer(org.id, 'platform', n, 'reserve'); save(); return true; }
 function refundTokens(org, n) { if (n > 0) { fromPlatform(org.id, n, 'refund'); save(); emit('room', {}, org.id); } }
-function chargeRecord(org, n, info) { if (n > 0) { record(org, { type: 'bot', amount: n, ...info }); afterSpend(org); } }   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
+// 봇 사용료가 확정되면 운영 기관이 출금(환전)할 수 있는 몫에 더함 — 실제 Claude API 요금을 운영 기관이 내므로.
+// 무제한(기간제) 토큰으로 쓴 사용료는 운영 기관이 공짜로 준 토큰이라 빼 둠 (그만큼 다른 기업이 충전한 돈이 빠져나가지 않게)
+function chargeRecord(org, n, info) { if (n > 0) { if (!unlimitedActive(org) && S.platform) S.platform.exchangeable = (S.platform.exchangeable || 0) + n; record(org, { type: 'bot', amount: n, ...info }); afterSpend(org); } }   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
 for (const e of S.experts) {
   if (typeof e.balance !== 'number') e.balance = 0;
   if (e.rate === undefined) e.rate = null;        // 시간당 토큰 (전문가가 직접 정함)
@@ -2557,7 +2559,7 @@ const ledger = new CHAIN.InternalAdapter({
     ids: () => [...S.orgs.map(o => o.id), ...S.experts.map(e => 'exp:' + e.id), 'platform'],
     wallet: id => { const a = acctOf(id); return !a.o ? 0 : a.kind === 'expert' ? a.o.balance || 0 : a.o.wallet || 0; },
     add: (id, d) => { const a = acctOf(id); if (!a.o) throw new Error('없는 계정 ' + id); if (a.kind === 'expert') a.o.balance = (a.o.balance || 0) + d; else a.o.wallet = (a.o.wallet || 0) + d; },
-    // 환전할 수 있는 토큰: 기업은 다른 기업에게서 번 토큰, 운영 기관은 운영 기관 몫(수수료)만. 전문가는 지금은 관리자 정산으로만
+    // 환전할 수 있는 토큰: 기업은 다른 기업에게서 번 토큰, 운영 기관은 운영 기관 몫(수수료)과 봇 사용료(무제한 토큰으로 쓴 것 제외). 전문가는 지금은 관리자 정산으로만
     exchangeable: id => { const a = acctOf(id); if (!a.o || a.kind === 'expert') return 0; return Math.max(0, Math.min(a.o.exchangeable || 0, a.o.wallet)); },
     credit: (id, n, t) => {
       const a = acctOf(id), o = a.o; o.wallet += n;
