@@ -90,6 +90,38 @@ function validateDef(o) {
   return { def };
 }
 
+// ----- 내보내기: 다시 올릴 수 있는 HTML 한 장 (Claude 아티팩트와 같은 형식) -----
+const escH = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+function exportDef(def, meta) {
+  return { hamkkebot: 1, name: def.name, short: def.short, color: def.color, tag: def.tag, desc: def.desc, hello: def.hello, quick: def.quick || [], kind: def.kind || 'chat', ppt: !!def.ppt, role: def.role, exported: meta };
+}
+function exportHtml(def, meta) {
+  const o = exportDef(def, meta), pretty = JSON.stringify(o, null, 2);
+  const inScript = JSON.stringify(o).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+  return `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escH(o.name)} · 함께봇 봇 정의</title>
+<style>body{margin:0;font:15px/1.6 "Malgun Gothic","Noto Sans KR",system-ui,sans-serif;color:#17202b;background:#fff}main{max-width:760px;margin:0 auto;padding:28px 18px 60px}
+.av{display:inline-flex;width:44px;height:44px;border-radius:50%;align-items:center;justify-content:center;color:#fff;font-weight:700;vertical-align:middle;margin-right:10px}
+h1{font-size:26px;margin:0;display:flex;align-items:center}h2{font-size:17px;margin:28px 0 8px}.mute{color:#667085;font-size:14px}
+pre{white-space:pre-wrap;word-break:break-word;background:#f6f8fa;border-radius:10px;padding:12px 14px;font-size:13px}ol{padding-left:20px}dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:14px 0}dt{color:#667085}dd{margin:0}</style></head>
+<body><main>
+<h1><span class="av" style="background:${escH(o.color)}">${escH(o.short)}</span>${escH(o.name)}</h1>
+<p>${escH(o.desc)}</p>
+<dl><dt>종류</dt><dd>${escH(KINDS[o.kind] || o.kind)}${o.ppt ? ' + PPT' : ''}</dd><dt>한 줄 소개</dt><dd>${escH(o.tag)}</dd>${meta.from ? `<dt>내보낸 곳</dt><dd>${escH(meta.from)}${meta.version ? ` · 버전 ${escH(meta.version)}` : ''}</dd>` : ''}<dt>내보낸 날</dt><dd>${escH(meta.at)}</dd>${o.quick.length ? `<dt>빠른 요청</dt><dd>${o.quick.map(escH).join(' · ')}</dd>` : ''}</dl>
+<h2>함께봇에 붙이는 법</h2>
+<ol><li>함께봇 웹앱 → 전문가 초대 → <b>+ 봇 만들기·올리기</b></li><li>「파일로 올리기」에서 이 파일을 고르거나, 이 파일을 공개 링크로 올린 뒤 링크를 넣거나, 아래 정의(JSON)를 붙여넣으세요.</li><li>기업방에서 승인하면 우리 기업 봇 목록에 올라가요. 토큰 가격·공개 여부는 붙인 기업이 새로 정해요.</li></ol>
+<h2>첫 인사</h2><p>${escH(o.hello)}</p>
+<h2>역할 지시문</h2><pre>${escH(o.role)}</pre>
+<h2>정의 (JSON)</h2><pre>${escH(pretty)}</pre>
+<p class="mute">함께봇 봇 정의 파일 · hamkkebot 1</p>
+<script type="application/json" id="hamkkebot-bot">${inScript}</script>
+</main></body></html>
+`;
+}
+// 올린 정의의 내보내기 정보 (보여 주기만 함)
+const readMeta = o => o && o.exported && typeof o.exported === 'object' ? { from: s(o.exported.from, 40), version: s(o.exported.version, 10), at: s(o.exported.at, 20), source: s(o.exported.source, 10) } : null;
+
 // 직원이 Claude에게 붙여 넣어 쓰는 안내문 (Claude가 정의를 만들어 아티팩트로 공개하게)
 const CLAUDE_PROMPT = `함께봇(사회적기업용 전문가 봇 플랫폼)에 올릴 봇을 만들고 싶어요. 아래 형식의 JSON 하나로 봇 정의를 만들어 주세요.
 만든 뒤에는 그 JSON을 화면에 보여 주는 HTML 페이지(아티팩트)로 만들고, 페이지 안에 <script type="application/json" id="hamkkebot-bot">정의 JSON</script> 를 꼭 넣어 주세요.
@@ -114,4 +146,4 @@ const CLAUDE_PROMPT = `함께봇(사회적기업용 전문가 봇 플랫폼)에 
 
 제가 만들고 싶은 봇: `;
 
-module.exports = { checkUrl, fetchPublic, extractDef, validateDef, privateIp, KINDS, CLAUDE_PROMPT };
+module.exports = { exportHtml, exportDef, readMeta, checkUrl, fetchPublic, extractDef, validateDef, privateIp, KINDS, CLAUDE_PROMPT };

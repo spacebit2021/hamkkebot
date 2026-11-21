@@ -1468,16 +1468,28 @@ async function userApi(req, res, p, sess) {
     const mineBot = id => S.customBots.find(c => c.id === id && c.orgId === org.id);
     const view = c => ({ id: c.id, def: c.def, pending: c.pending, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, stats: c.stats || { uses: 0, earned: 0, byOrg: {} }, createdBy: c.createdBy, passes: Object.keys(c.passes || {}).filter(k => c.passes[k] > Date.now()).length });
     if (p === '/api/bots/mine' && req.method === 'GET') return json(res, 200, { bots: S.customBots.filter(c => c.orgId === org.id).map(view), prompt: MARKET.CLAUDE_PROMPT, kinds: MARKET.KINDS });
+    if (p === '/api/bots/export' && req.method === 'GET') {
+      const qs = new URL(req.url, 'http://x').searchParams;
+      // 기본 봇과 우리 기업이 만든 봇만 내보냄 (다른 기업의 봇은 역할 지시문을 볼 수 없음)
+      const id = str(qs.get('id'), 40), bi = BOTS.find(x => x.id === id && !x.soon), c = !bi && mineBot(id);
+      if (!bi && !(c && c.def)) return BAD(res, '내보낼 수 없는 봇이에요 (기본 봇과 우리 기업이 만든 봇만 내보낼 수 있어요)', 404);
+      const def = bi ? { name: bi.name, short: bi.short, color: bi.color, tag: bi.tag, desc: bi.desc, hello: bi.hello, quick: bi.quick, kind: bi.kind || 'chat', ppt: !!bi.ppt, role: bi.role } : c.def;
+      const meta = { from: bi ? '함께봇 기본 봇' : org.name, version: bi ? '' : String((c.versions || []).length), at: todayKst(), source: bi ? 'builtin' : 'custom' };
+      const fname = `${def.name.replace(/[\\/:*?"<>|\s]+/g, '_')}.hamkkebot.${qs.get('format') === 'json' ? 'json' : 'html'}`;
+      const out = qs.get('format') === 'json' ? JSON.stringify(MARKET.exportDef(def, meta), null, 2) : MARKET.exportHtml(def, meta);
+      res.writeHead(200, { 'content-type': qs.get('format') === 'json' ? 'application/json; charset=utf-8' : 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fname)}` });
+      return res.end(out);
+    }
     if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
     const b = await body(req);
     if (p === '/api/bots/fetch') {
       const f = await MARKET.fetchPublic(str(b.url, 500)); if (f.error) return BAD(res, f.error);
       const e = MARKET.extractDef(f.text); if (e.error) return BAD(res, e.error);
-      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def, sourceUrl: f.finalUrl });
+      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def, sourceUrl: f.finalUrl, meta: MARKET.readMeta(e.def) });
     }
     if (p === '/api/bots/parse') {
       const e = MARKET.extractDef(String(b.text || '').slice(0, 300000)); if (e.error) return BAD(res, e.error);
-      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def });
+      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def, meta: MARKET.readMeta(e.def) });
     }
     if (p === '/api/bots/submit') {
       const v = MARKET.validateDef(b.def); if (v.error) return BAD(res, v.error);
