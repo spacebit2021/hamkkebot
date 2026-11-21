@@ -17,6 +17,7 @@ try {
 const PORT = +process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
+const ANTHROPIC_BASE_URL = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
@@ -49,7 +50,15 @@ for (const k of ['orgs', 'users', 'rooms', 'experts', 'ledger']) if (!Array.isAr
 if (!S.sessions) S.sessions = {};
 if (!S.dmMap) S.dmMap = {};
 if (!S.expertLogins) S.expertLogins = {}; // 전문가 웹 로그인용 1회용 코드
-if (!S.expertGroups) S.expertGroups = {};   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
+if (!S.expertGroups) S.expertGroups = {};
+if (!S.botCosts) S.botCosts = {};           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
+// 요청당 토큰: 관리자 설정 > bots.js 기본값. 'summary'는 함께봇 문서 정리
+const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).map(b => ({ id: b.id, name: b.name, def: b.cost || 0 })), { id: 'summary', name: '함께봇 문서 정리', def: 1 }];
+const costOf = id => { const v = S.botCosts[id]; if (Number.isInteger(v)) return v; const it = COST_ITEMS().find(x => x.id === id); return it ? it.def : 0; };
+// 토큰 미리 잡기 → 성공하면 기록, 실패하면 돌려줌 (동시에 여러 요청이 와도 잔액을 넘지 않게)
+function reserveTokens(org, n) { if (n <= 0) return true; if (org.wallet < n) return false; org.wallet -= n; save(); return true; }
+function refundTokens(org, n) { if (n > 0) { org.wallet += n; save(); emit('room', {}, org.id); } }
+function chargeRecord(org, n, info) { if (n > 0) record(org, { type: 'bot', amount: n, ...info }); }   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
 for (const e of S.experts) {
   if (typeof e.balance !== 'number') e.balance = 0;
   if (e.rate === undefined) e.rate = null;        // 시간당 토큰 (전문가가 직접 정함)
@@ -205,7 +214,7 @@ function orgText(o) {
 async function callClaude(system, user, maxTokens = 2500) {
   if (!ANTHROPIC_API_KEY) return { error: '서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.' };
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await fetch(`${ANTHROPIC_BASE_URL}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] })
@@ -222,7 +231,7 @@ function orgContext(org) {
   return `${orgText(org)}${docText ? `\n\n[기업 정보 문서 v${cur.n} — 기업이 승인한 내용]\n${docText}` : ''}`;
 }
 async function askClaude(bot, room, text) {
-  if (!ANTHROPIC_API_KEY) return '서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.';
+  if (!ANTHROPIC_API_KEY) return { error: '서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.' };
   const hist = room.msgs.slice(-14, -1).map(m => {
     const who = m.from === 'me' ? '사용자(웹)' : m.from === 'tg' ? `${m.name}(텔레그램)` : m.from === 'hx' ? `${m.name}(사람 전문가)` : m.from === 'sys' ? null : (BOTS.find(b => b.id === m.from) || {}).name;
     return who ? `${who}: ${m.text.slice(0, 1500)}` : null;
@@ -230,17 +239,75 @@ async function askClaude(bot, room, text) {
   const system = `${bot.role}\n\n[우리 기업]\n${orgContext(orgById(room.orgId))}\n\n한국어로 답하세요. 서식은 굵게(**)와 줄바꿈만 쓰세요.`;
   const user = `[이 채팅방의 최근 대화]\n${hist || '(없음)'}\n\n[이번 요청]\n${text}`;
   const r = await callClaude(system, user);
-  if (r.error) return r.error;
-  return r.text + (r.cut ? '\n\n(답변이 길어 중간에 끊겼어요. "이어서"라고 보내 주세요.)' : '');
+  if (r.error) return { error: r.error };
+  return { text: r.text + (r.cut ? '\n\n(답변이 길어 중간에 끊겼어요. "이어서"라고 보내 주세요.)' : '') };
 }
+// 봇 실행: 토큰을 먼저 잡고 → 답을 받으면 사용 기록, 실패하면 돌려줌
 async function runBot(room, botId, text) {
   const bot = botById(botId);
   if (!bot) return;
+  const org = orgById(room.orgId), cost = costOf(bot.id);
+  const say = (t, extra = {}) => { addMsg(room, { from: bot.id, text: t, ...extra }); if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${extra.tgText || t}`); };
+  if (!ANTHROPIC_API_KEY) return say('서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.');
+  if (!reserveTokens(org, cost)) {
+    addMsg(room, { from: 'sys', text: `${bot.name}은(는) 요청당 ${cost}토큰을 써요. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
+    if (room.tgChatId) tgSend(room.tgChatId, `${bot.name}: 토큰 잔액이 부족해요 (필요 ${cost}, 잔액 ${org.wallet}).`);
+    return;
+  }
   emit('typing', { roomId: room.id, botId }, room.orgId);
   if (room.tgChatId) tg('sendChatAction', { chat_id: room.tgChatId, action: 'typing' });
-  const answer = await askClaude(bot, room, text);
-  addMsg(room, { from: bot.id, text: answer });
-  if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${answer}`);
+  const r = bot.kind === 'site' ? await runSiteBot(bot, room, org, text) : await askClaude(bot, room, text);
+  if (r.error) { refundTokens(org, cost); return say(`${r.error}${cost ? ' (토큰은 쓰지 않았어요)' : ''}`); }
+  chargeRecord(org, cost, { botId: bot.id, botName: bot.name, roomId: room.id, roomName: room.name });
+  say(r.text, { cost, ...(r.site ? { site: r.site, tgText: r.tgText } : {}) });
+}
+
+// ---------- 홈페이지 봇 · 랜딩페이지 ----------
+// org.site = { slug, seq, published, versions: [{ id, n, at, html, note, by, request }] }
+const RESERVED_SLUGS = new Set(['api', 'admin', 'expert', 's', 'site', 'static', 'public', 'login', 'logout', 'www', 'help', 'about', 'hamkkebot']);
+const slugError = v => !/^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$/.test(v) ? '주소는 영문 소문자·숫자·하이픈 3~40자로 정해 주세요 (처음과 끝은 하이픈 불가)' : RESERVED_SLUGS.has(v) ? '쓸 수 없는 주소예요' : null;
+const ensureSite = org => org.site || (org.site = { slug: null, seq: 0, published: null, versions: [] });
+const siteVersion = (org, id) => ensureSite(org).versions.find(v => v.id === id);
+const siteUrl = slug => `${PUBLIC_URL ? PUBLIC_URL.replace(/\/$/, '') : ''}/s/${slug}`;
+const siteFileName = (org, v) => `${(org.name || '기업').replace(/[\\/:*?"<>|\s]+/g, '_')}_홈페이지_v${v.n}.html`;
+// 공개·미리보기 페이지에 붙이는 보안 헤더: sandbox로 별도 출처 취급, 스크립트·외부 리소스 차단
+const SITE_HEADERS = {
+  'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+  'content-security-policy': "sandbox allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation; default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+};
+async function runSiteBot(bot, room, org, text) {
+  const site = ensureSite(org);
+  const draft = site.versions[site.versions.length - 1];
+  const docV = docCurrent(org);
+  const user = `${draft ? `[지금까지 만든 페이지 v${draft.n} — 수정 요청이면 이것을 바탕으로]\n${draft.html.slice(0, 60000)}\n\n` : ''}[이번 요청]\n${text}`;
+  const r = await callClaude(`${bot.role}\n\n[우리 기업]\n${orgContext(org)}`, user, 12000);
+  if (r.error) return { error: r.error };
+  if (r.cut) return { error: '페이지가 길어 만들다 끊겼어요. 섹션을 줄여 달라고 다시 요청해 주세요.' };
+  const [rawHtml, memo = ''] = r.text.split(/^\s*-{3}\s*메모\s*-{3}\s*$/m);
+  const html = DOC.sanitizePage(rawHtml.replace(/^\s*\`\`\`(?:html)?\s*/i, '').replace(/\s*\`\`\`\s*$/, ''));
+  if (!html) return { error: '페이지를 만들지 못했어요 (완성된 HTML 문서가 오지 않았어요). 다시 요청해 주세요.' };
+  const v = { id: newId('w'), n: ++site.seq, at: Date.now(), html, note: str(memo.trim(), 600), request: str(text, 200), docN: docV.n, by: bot.id };
+  site.versions.push(v);
+  if (site.versions.length > 20) site.versions.splice(0, site.versions.length - 20).forEach(x => { if (x.id === site.published) site.versions.unshift(x); });
+  save();
+  const title = DOC.pageTitle(html);
+  return {
+    text: `랜딩페이지 v${v.n}을 만들었어요${title ? ` — "${title}"` : ''}. (기업 정보 문서 v${docV.n} 기준)\n아래 "미리보기"로 확인하고, 괜찮으면 "게시하기"를 눌러야 공개돼요.${v.note ? `\n\n**확인할 것**\n${v.note}` : ''}`,
+    site: { versionId: v.id, n: v.n },
+    tgText: `랜딩페이지 v${v.n}을 만들었어요. 미리보기와 게시는 웹앱 채팅방에서 할 수 있어요.${v.note ? '\n확인할 것: ' + v.note : ''}`
+  };
+}
+// 게시 직후 서버가 공개 주소에 직접 접속해 보는 '등록 확인'
+function selfCheck(slug) {
+  return new Promise(resolve => {
+    const t0 = Date.now();
+    const req = http.get({ host: '127.0.0.1', port: PORT, path: `/s/${encodeURIComponent(slug)}`, timeout: 5000 }, res => {
+      let d = ''; res.setEncoding('utf8'); res.on('data', c => d += c);
+      res.on('end', () => resolve({ status: res.statusCode, bytes: Buffer.byteLength(d), ms: Date.now() - t0, title: DOC.pageTitle(d), csp: /sandbox/.test(res.headers['content-security-policy'] || ''), noScript: !/<script/i.test(d) }));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, error: '시간 초과' }); });
+    req.on('error', e => resolve({ status: 0, error: e.message }));
+  });
 }
 
 // ---------- 텔레그램 ----------
@@ -733,7 +800,7 @@ async function pollTelegram() {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const json = (res, code, obj, headers) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...(headers || {}) }); res.end(JSON.stringify(obj)); };
 const body = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(d || '{}')); } catch (_) { ok({}); } }); });
-const publicBots = () => BOTS.map(({ role, ...b }) => b);
+const publicBots = () => BOTS.map(({ role, ...b }) => ({ ...b, cost: b.soon ? null : costOf(b.id) }));
 const publicExperts = () => S.experts.filter(e => e.tgChatId && e.rate).map(e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, color: e.color, linked: true }));
 const expertProfile = e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, balance: e.balance });
 const orgPublic = o => ({ id: o.id, name: o.name, mission: o.mission, product: o.product, target: o.target, tone: o.tone });
@@ -755,8 +822,9 @@ async function adminApi(req, res, p, sess) {
   if (p === '/api/admin/logout') { delete S.sessions[sess.token]; save(); return json(res, 200, { ok: true }, { 'set-cookie': cookie('', 0) }); }
   if (p === '/api/admin/state') return json(res, 200, {
     telegram: { enabled: !!tgUsername, username: tgUsername },
-    orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
+    orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
+    costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
     ledger: S.ledger.slice(-500).reverse()
   });
   if (req.method !== 'POST') return json(res, 405, {});
@@ -776,9 +844,10 @@ async function adminApi(req, res, p, sess) {
     save(); emit('room', {}, org.id);
     return json(res, 200, { ok: true, orgId: org.id });
   }
-  let m = p.match(/^\/api\/admin\/orgs\/(\w+)\/(users|charge|deduct|rename|delete)$/);
+  let m = p.match(/^\/api\/admin\/orgs\/(\w+)\/(users|charge|deduct|rename|delete|unpublish)$/);
   if (m) {
     const org = orgById(m[1]); if (!org) return BAD(res, '없는 기업이에요', 404);
+    if (m[2] === 'unpublish') { if (!org.site || !org.site.published) return BAD(res, '게시된 페이지가 없어요'); org.site.published = null; save(); emit('room', {}, org.id); return json(res, 200, { ok: true }); }
     if (m[2] === 'users') {
       const loginId = str(b.loginId, 30).toLowerCase();
       const e = idError(loginId) || pwError(b.password); if (e) return BAD(res, e);
@@ -812,6 +881,17 @@ async function adminApi(req, res, p, sess) {
     else S.users = S.users.filter(x => x !== u);
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
+  }
+  if (p === '/api/admin/costs') {
+    const next = {};
+    for (const it of COST_ITEMS()) {
+      if (b.costs == null || !(it.id in b.costs)) continue;
+      const n = Number(b.costs[it.id]);
+      if (!Number.isInteger(n) || n < 0 || n > 1000) return BAD(res, `${it.name}: 0~1000 사이 정수로 입력해 주세요`);
+      next[it.id] = n;
+    }
+    Object.assign(S.botCosts, next); save(); emit('room', {}, '*');
+    return json(res, 200, { ok: true, costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })) });
   }
   // 사람 전문가 (모든 기업이 함께 호출)
   if (p === '/api/admin/experts') {
@@ -894,8 +974,46 @@ async function userApi(req, res, p, sess) {
     return json(res, 200, {
       me: { loginId: user.loginId, name: user.name }, org: orgPublic(org), wallet: org.wallet,
       rooms: S.rooms.filter(r => r.orgId === org.id), bots: publicBots(), experts: publicExperts(),
-      telegram: { enabled: !!tgUsername, username: tgUsername }, ai: !!ANTHROPIC_API_KEY
+      telegram: { enabled: !!tgUsername, username: tgUsername }, ai: !!ANTHROPIC_API_KEY,
+      site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
+      costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)]))
     });
+  // ----- 랜딩페이지 -----
+  if (p.startsWith('/api/site')) {
+    const site = ensureSite(org), url = new URL(req.url, 'http://x');
+    if (req.method === 'GET') {
+      if (p === '/api/site') return json(res, 200, { slug: site.slug, published: site.published, url: site.slug ? siteUrl(site.slug) : null, versions: site.versions.slice().reverse().map(v => ({ id: v.id, n: v.n, at: v.at, note: v.note, request: v.request, title: DOC.pageTitle(v.html), docN: v.docN })) });
+      const v = siteVersion(org, url.searchParams.get('id'));
+      if (!v) return BAD(res, '없는 버전이에요', 404);
+      if (p === '/api/site/preview') { res.writeHead(200, { ...SITE_HEADERS, 'cache-control': 'no-store' }); return res.end(v.html); }
+      if (p === '/api/site/download') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(siteFileName(org, v))}` }); return res.end(v.html); }
+      return BAD(res, '없는 기능이에요', 404);
+    }
+    if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
+    const b = await body(req);
+    if (p === '/api/site/publish') {
+      const v = siteVersion(org, b.versionId); if (!v) return BAD(res, '없는 버전이에요', 404);
+      const slug = str(b.slug || site.slug || '', 40).toLowerCase();
+      const e = slugError(slug); if (e) return BAD(res, e);
+      if (S.orgs.some(o => o !== org && o.site && o.site.slug === slug)) return BAD(res, '다른 기업이 이미 쓰는 주소예요');
+      const oldSlug = site.slug;
+      site.slug = slug; site.published = v.id; site.publishedAt = Date.now(); save();
+      const check = await selfCheck(slug);
+      const ok = check.status === 200 && check.title === DOC.pageTitle(v.html) && check.csp && check.noScript;
+      const room = S.rooms.find(r => r.id === b.roomId && r.orgId === org.id);
+      const line = ok ? `랜딩페이지 v${v.n}을 게시했어요: ${siteUrl(slug)}\n등록 확인: 공개 주소에 접속해 보니 정상이에요 (응답 200 · ${(check.bytes / 1024).toFixed(1)}KB · ${check.ms}ms · 제목 "${check.title}" · 스크립트 없음 · 보안 헤더 적용).${oldSlug && oldSlug !== slug ? `\n이전 주소 /s/${oldSlug}는 이제 열리지 않아요.` : ''}`
+        : `랜딩페이지 v${v.n}을 게시했지만 등록 확인에 실패했어요 (응답 ${check.status || check.error}). 관리자에게 알려 주세요.`;
+      if (room) addMsg(room, { from: 'sys', text: line }); else emit('room', {}, org.id);
+      return json(res, ok ? 200 : 502, { ok, url: siteUrl(slug), check });
+    }
+    if (p === '/api/site/unpublish') {
+      if (!site.published) return BAD(res, '게시된 페이지가 없어요');
+      site.published = null; save(); emit('room', {}, org.id);
+      return json(res, 200, { ok: true });
+    }
+    return BAD(res, '없는 기능이에요', 404);
+  }
+
   // ----- 기업 정보 문서 -----
   if (p.startsWith('/api/doc')) {
     const d = ensureDoc(org), url = new URL(req.url, 'http://x');
@@ -938,8 +1056,12 @@ async function userApi(req, res, p, sess) {
     }
     if (p === '/api/doc/generate') {
       if (d.versions.some(v => v.status === 'pending' && v.by.kind === 'bot')) return BAD(res, '함께봇 정리안이 이미 기다리고 있어요. 먼저 승인하거나 거절해 주세요.');
+      const cost = ANTHROPIC_API_KEY ? costOf('summary') : 0; // AI 없이 붙이기만 하는 경우는 무료
+      if (!reserveTokens(org, cost)) return BAD(res, `함께봇 문서 정리는 ${cost}토큰을 써요. 잔액(${org.wallet}토큰)이 부족해요.`);
       const r = await generateDocProposal(org, user);
-      return r.error ? BAD(res, r.error) : json(res, 200, { ok: true, id: r.version.id, n: r.version.n });
+      if (r.error) { refundTokens(org, cost); return BAD(res, r.error); }
+      chargeRecord(org, cost, { botId: 'summary', botName: '함께봇 문서 정리' });
+      return json(res, 200, { ok: true, id: r.version.id, n: r.version.n, cost });
     }
     if (p === '/api/doc/approve' || p === '/api/doc/reject') {
       const v = docVersion(org, b.id);
@@ -1095,6 +1217,15 @@ http.createServer(async (req, res) => {
     if (p.startsWith('/api/')) return await userApi(req, res, p, sess);
   } catch (e) { console.error(e); return BAD(res, '서버 오류가 났어요', 500); }
 
+  // 게시된 랜딩페이지 (로그인 없이 누구나)
+  const sm = p.match(/^\/s\/([a-z0-9-]{3,40})\/?$/);
+  if (sm) {
+    const org = S.orgs.find(o => o.site && o.site.slug === sm[1] && o.site.published);
+    const v = org && siteVersion(org, org.site.published);
+    if (!v) { res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' }); return res.end('<!DOCTYPE html><meta charset="utf-8"><title>없는 페이지</title><p style="font-family:sans-serif;padding:40px">게시된 페이지가 없어요.</p>'); }
+    res.writeHead(200, { ...SITE_HEADERS, 'cache-control': 'public, max-age=60' });
+    return res.end(v.html);
+  }
   const file = path.join(__dirname, 'public', p === '/' ? 'index.html' : p === '/admin' ? 'admin.html' : p === '/expert' ? 'expert.html' : path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
   if (!file.startsWith(path.join(__dirname, 'public'))) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {

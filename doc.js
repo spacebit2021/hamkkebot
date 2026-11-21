@@ -107,4 +107,86 @@ function defaultDoc(org) {
 <h2>확인이 필요한 정보</h2><ul><li>대표 연락처, 인증·수상 내역 등은 사실 확인 후 적어 주세요.</li></ul>`);
 }
 
-module.exports = { sanitizeHtml, htmlToText, wrapDocument, defaultDoc, escapeHtml, MAX_HTML };
+// ---------- 랜딩페이지(완성 HTML 문서) 정리기 ----------
+// 홈페이지 봇이 만든 페이지는 공개 주소로 나가므로, 스크립트·외부 리소스를 모두 뺀다.
+// (서버는 추가로 CSP sandbox 헤더를 붙여서, 혹시 남은 것이 있어도 실행되지 않게 한다)
+const MAX_PAGE = 400 * 1024;
+const PAGE_TAGS = new Set([...ALLOWED, 'html', 'head', 'body', 'meta', 'title', 'link', 'nav', 'main', 'aside', 'figure', 'figcaption',
+  'h5', 'h6', 'img', 'address', 'time', 'abbr', 'cite', 'q', 'del', 'ins', 'kbd', 'samp', 'var', 'wbr', 'picture', 'details', 'summary']);
+const PAGE_VOID = new Set(['br', 'hr', 'meta', 'link', 'img', 'wbr']);
+const PAGE_DROP = /<(script|iframe|object|embed|template|noscript|svg|math|textarea|select|form|frameset|frame|applet|video|audio|canvas|base|portal)\b[\s\S]*?<\/\1\s*>/gi;
+const PAGE_DROP_OPEN = /<\/?(script|iframe|object|embed|template|noscript|svg|math|textarea|select|form|input|button|frameset|frame|applet|video|audio|canvas|base|portal|source|track)\b[^>]*>/gi;
+const GLOBAL_ATTRS = ['class', 'id', 'title', 'role', 'lang', 'dir', 'style'];
+const PAGE_ATTRS = { a: ['href'], img: ['src', 'alt', 'width', 'height', 'loading'], meta: ['name', 'content', 'charset', 'property'],
+  link: ['rel', 'href'], html: ['lang'], td: ['colspan', 'rowspan'], th: ['colspan', 'rowspan', 'scope'], ol: ['start'], time: ['datetime'], details: ['open'] };
+
+function cleanCss(css) {
+  return String(css)
+    .replace(/<\/?/g, '')                              // </style> 탈출 방지
+    .replace(/@import[^;]*;?/gi, '')                    // 외부 CSS 끌어오기 금지
+    .replace(/expression\s*\(/gi, 'x(')
+    .replace(/(java|vb)script\s*:/gi, '')
+    .replace(/behavior\s*:/gi, 'x:').replace(/-moz-binding/gi, 'x')
+    .replace(/url\s*\(\s*(?!["']?data:image\/(png|jpe?g|gif|webp);)[^)]*\)/gi, 'none'); // data:image 외 url() 금지
+}
+function pageAttr(tag, name, v) {
+  if (name === 'style') return /expression\s*\(|javascript:|url\s*\(|@import|behavior\s*:/i.test(v) ? null : v;
+  if (name === 'href' && tag === 'a') { const t = String(v).replace(/[\u0000- \u007f-\u009f]/g, ''); return /^(https?:\/\/|mailto:|tel:|#)/i.test(t) ? t : null; }
+  if (name === 'href' && tag === 'link') return /^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(v) ? v : null;
+  if (name === 'rel') return /^(stylesheet|preconnect)$/i.test(v) ? v : null;
+  if (name === 'src') return /^data:image\/(png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(v) ? v : null;
+  if (['width', 'height', 'colspan', 'rowspan', 'start'].includes(name)) return /^\d{1,4}$/.test(v) ? v : null;
+  if (name === 'loading') return /^(lazy|eager)$/.test(v) ? v : null;
+  if (name === 'scope') return /^(row|col|rowgroup|colgroup)$/.test(v) ? v : null;
+  if (name === 'charset') return /^utf-?8$/i.test(v) ? v : null;
+  if (tag === 'meta' && name === 'name' && /^http-equiv$/i.test(v)) return null;
+  return v;
+}
+function sanitizePage(input) {
+  let s = String(input || '').replace(/\u0000/g, '');
+  if (s.length > MAX_PAGE) return '';
+  s = s.replace(/<!--[\s\S]*?(-->|$)/g, '').replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '').replace(/<![^>]*>/g, '').replace(/<\?[\s\S]*?\?>/g, '');
+  let prev; do { prev = s; s = s.replace(PAGE_DROP, ''); } while (s !== prev);
+  s = s.replace(PAGE_DROP_OPEN, '');
+  // <style> 내용은 따로 꺼내 정리 후 다시 넣음 (CSS의 > 기호가 깨지지 않게)
+  const styles = [];
+  s = s.replace(/<style\b[^>]*>([\s\S]*?)(<\/style\s*>|$)/gi, (_, css) => { styles.push(cleanCss(css)); return `\u0000S${styles.length - 1}\u0000`; });
+  const out = [], open = [];
+  const re = /<\/?([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>|<|>/g;
+  let last = 0, m;
+  while ((m = re.exec(s))) {
+    out.push(s.slice(last, m.index)); last = re.lastIndex;
+    if (m[0] === '<') { out.push('&lt;'); continue; }
+    if (m[0] === '>') { out.push('&gt;'); continue; }
+    const tag = m[1].toLowerCase(), closing = m[0][1] === '/';
+    if (!PAGE_TAGS.has(tag)) continue;
+    if (closing) { const i = open.lastIndexOf(tag); if (i === -1) continue; while (open.length > i) out.push(`</${open.pop()}>`); continue; }
+    const keep = [], allow = [...GLOBAL_ATTRS, ...(PAGE_ATTRS[tag] || [])];
+    const ar = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*(?:=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+    let a;
+    while ((a = ar.exec(m[2]))) {
+      const name = a[1].toLowerCase();
+      if (a[2] === undefined) { if (name === 'open' && tag === 'details') keep.push('open'); continue; }
+      if (!allow.includes(name) && !/^aria-[a-z]+$/.test(name)) continue;
+      let v = a[2].replace(/^["']|["']$/g, '').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+      v = pageAttr(tag, name, v); if (v == null) continue;
+      keep.push(`${name}="${escapeHtml(v)}"`);
+    }
+    if (tag === 'a' && keep.some(k => /^href="https?:/.test(k))) keep.push('rel="noopener noreferrer"', 'target="_blank"');
+    if (tag === 'link' && !(keep.some(k => k.startsWith('href=')) && keep.some(k => k.startsWith('rel=')))) continue;
+    if (tag === 'meta' && !keep.some(k => /^(name|charset|property)=/.test(k))) continue;
+    if (tag === 'img' && !keep.some(k => k.startsWith('src='))) continue;
+    out.push(`<${tag}${keep.length ? ' ' + keep.join(' ') : ''}>`);
+    if (!PAGE_VOID.has(tag)) open.push(tag);
+  }
+  out.push(s.slice(last));
+  while (open.length) out.push(`</${open.pop()}>`);
+  let html = out.join('').replace(/\u0000S(\d+)\u0000/g, (_, i) => `<style>${styles[+i]}</style>`).trim();
+  if (!/<body[\s>]/i.test(html) || !/<\/body>/i.test(html)) return '';
+  if (!/name="viewport"/i.test(html)) html = html.replace(/<head[^>]*>/i, h => `${h}<meta name="viewport" content="width=device-width, initial-scale=1">`);
+  if (!/<meta charset/i.test(html)) html = html.replace(/<head[^>]*>/i, h => `${h}<meta charset="utf-8">`);
+  return '<!DOCTYPE html>\n' + html + '\n';
+}
+const pageTitle = html => ((String(html).match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '').trim();
+
+module.exports = { sanitizeHtml, htmlToText, wrapDocument, defaultDoc, escapeHtml, MAX_HTML, sanitizePage, pageTitle };

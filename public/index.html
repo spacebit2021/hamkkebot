@@ -106,6 +106,11 @@ button{cursor:pointer}
 .hist .st{font-size:12px;padding:2px 8px;border-radius:8px;background:var(--side)}
 .docerr{font-size:14px;color:#d1453b;min-height:20px}.docok{font-size:14px;color:#06784f;min-height:20px}
 @media(max-width:760px){.cmp{grid-template-columns:minmax(0,1fr)}.docview{padding:14px}}
+.sitelink{text-decoration:none;color:inherit}
+.sitecard{margin-top:8px;border:1.5px solid #0e8f7e;border-radius:14px;padding:12px 14px;background:var(--card);display:flex;flex-direction:column;gap:10px;max-width:520px}
+.sitecard .acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.sitecard a.btn{display:inline-flex;align-items:center;text-decoration:none}
+.slug{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:14px}.slug input{max-width:200px;min-height:40px}
+.live{font-size:13px;color:#06784f;font-weight:700}
 .typing{color:var(--mute);font-size:14px;padding:0 4px}
 .tools{display:flex;gap:6px;margin-top:6px}
 .tools button{border:0;background:none;color:var(--mute);font-size:13px;min-height:32px;padding:0 6px}
@@ -164,6 +169,7 @@ textarea.field{min-height:80px;resize:vertical}
   </div>
   <button class="org" id="orgBtn"><b id="orgName">기업 정보 입력하기</b><span id="orgMission">봇이 우리 기업을 알고 답하도록</span></button>
   <button class="docbtn" id="docBtn" type="button"><span>기업 정보 문서</span><span class="badge" id="docBadge" hidden></span></button>
+  <a class="docbtn sitelink" id="siteLink" target="_blank" rel="noopener" hidden><span>우리 홈페이지</span><span class="note" style="padding:0" id="siteLinkN"></span></a>
   <div class="wallet" id="wallet"><span>상담 토큰</span><b id="walletN">0</b></div>
   <nav class="rooms" id="rooms" aria-label="채팅방"></nav>
   <button class="newroom" id="newRoom">+ 새 채팅방</button>
@@ -278,6 +284,7 @@ function renderTop(){
  $('quick').innerHTML=cur&&cur.quick?cur.quick.map(q=>`<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join(''):'';
  $('tgBtn').classList.toggle('on',!!r.tgChatId);$('tgLabel').textContent=r.tgChatId?'연결됨':'텔레그램';
  $('note').textContent=!S.ai?'서버에 ANTHROPIC_API_KEY가 없어 봇이 답하지 못해요.':'봇 답변은 초안입니다. 수치·인증·성과는 반드시 직접 확인 후 사용하세요.';
+ {const cb=botById($('to').value);if(S.ai&&cb&&cb.cost)$('note').textContent=`${cb.name}은(는) 요청당 ${cb.cost}토큰을 써요 (잔액 ${S.wallet}토큰). 실패하면 토큰은 빠지지 않아요. 답변은 초안이니 사실은 직접 확인하세요.`}
 }
 function msgHTML(m,i){
  if(m.from==='sys'&&m.join){const j=m.join,head=`<div class="msg sys">${esc(m.text)}</div>`;
@@ -294,17 +301,19 @@ function msgHTML(m,i){
  if(m.from==='tg')return `<div class="msg">${tgAv(m.name)}<div><div class="who">${esc(m.name)}<span class="src">텔레그램</span></div><div class="bubble">${esc(m.text)}</div></div></div>`;
  if(m.from==='hx'){const x=expById(m.expertId)||{name:m.name,color:'#06a77d'};return `<div class="msg">${xAv(x)}<div><div class="who">${esc(m.name)}<span class="human">사람 전문가</span></div><div class="bubble">${esc(m.text)}</div></div></div>`}
  const b=botById(m.from)||{name:'봇',short:'봇',color:'#888'};
- return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}</div><div class="bubble">${fmt(m.text)}</div><div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
+ return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.site?siteCard(m):''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
 }
 function renderLog(){
  const r=room(); if(!r)return;
  const t=typing[r.id]?`<div class="typing">${esc((botById(typing[r.id])||{}).name||'봇')}이(가) 쓰는 중…</div>`:'';
  const keep={};document.querySelectorAll('.paycard[data-pay]').forEach(c=>keep[c.dataset.pay]=[c.querySelector('[data-amtin]').value,c.querySelector('[data-memo]').value]);
+ const keepSlug={};document.querySelectorAll('.sitecard [data-slug]').forEach(i=>keepSlug[i.closest('.sitecard').dataset.sitev]=i.value);
  $('log').innerHTML=r.msgs.length?r.msgs.map(msgHTML).join('')+t:`<div class="empty"><svg width="120" height="80" viewBox="0 0 120 80" aria-hidden="true"><rect x="6" y="10" width="64" height="40" rx="14" fill="var(--bub)"/><rect x="50" y="30" width="64" height="40" rx="14" fill="var(--pri)"/><circle cx="72" cy="50" r="4" fill="#fff"/><circle cx="84" cy="50" r="4" fill="#fff"/><circle cx="96" cy="50" r="4" fill="var(--acc)"/></svg><h3>아직 조용한 방이에요</h3><p><b>전문가 초대</b>로 봇을 데려오거나, <b>텔레그램</b>으로 그룹을 연결하세요.</p></div>`;
+ for(const id in keepSlug){const i=document.querySelector(`.sitecard[data-sitev="${id}"] [data-slug]`);if(i)i.value=keepSlug[id]}
  for(const id in keep){const c=document.querySelector(`.paycard[data-pay="${id}"]`);if(c){c.querySelector('[data-amtin]').value=keep[id][0];c.querySelector('[data-memo]').value=keep[id][1]}}
  $('log').scrollTop=$('log').scrollHeight;
 }
-function render(){$('walletN').textContent=S.wallet||0;renderRooms();renderTop();renderLog();renderOrg()}
+function render(){$('walletN').textContent=S.wallet||0;{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
 
 let callOpen=null, reviewMsg=null, xq='', xsort='';
 function renderBots(){
@@ -312,7 +321,7 @@ function renderBots(){
  $('dirLead').textContent=reviewMsg?'초안을 검토받을 사람 전문가를 골라 주세요.':'AI 봇은 바로 답하고, 사람 전문가는 텔레그램으로 호출돼 답장합니다.';
  const botCards=S.bots.map(b=>{
   const inRoom=r.bots.includes(b.id);
-  return `<div class="bot ${b.soon?'soon':''}"><header>${av(b)}<div><b>${esc(b.name)}</b><div class="tag">${esc(b.tag)}${b.soon?'':' · 텔레그램 /'+esc(b.id)}</div></div></header><p>${esc(b.desc)}</p>${b.soon?'<span class="soonchip">준비 중</span>':inRoom?'<button class="btn ghost" data-kick="'+b.id+'">내보내기</button>':'<button class="btn" data-invite="'+b.id+'">초대하기</button>'}</div>`}).join('');
+  return `<div class="bot ${b.soon?'soon':''}"><header>${av(b)}<div><b>${esc(b.name)}</b><div class="tag">${esc(b.tag)}${b.soon?'':' · 텔레그램 /'+esc(b.id)}</div></div>${b.soon?'':`<div class="rate"><b>${b.cost}</b><span>${b.cost?'토큰/요청':'무료'}</span></div>`}</header><p>${esc(b.desc)}</p>${b.soon?'<span class="soonchip">준비 중</span>':inRoom?'<button class="btn ghost" data-kick="'+b.id+'">내보내기</button>':'<button class="btn" data-invite="'+b.id+'">초대하기</button>'}</div>`}).join('');
  const affordable=x=>x.rate?Math.floor(S.wallet/x.rate*60):0;
  const fmtMin=m=>m>=60?`${Math.floor(m/60)}시간${m%60?' '+m%60+'분':''}`:`${m}분`;
  let list=(S.experts||[]).filter(x=>!xq||(x.name+x.field+(x.desc||'')+(x.career||'')).toLowerCase().includes(xq.toLowerCase()));
@@ -412,6 +421,18 @@ es.addEventListener('room',e=>{const d=JSON.parse(e.data);if(d.roomId)delete typ
 es.addEventListener('typing',e=>{const d=JSON.parse(e.data);typing[d.roomId]=d.botId;if(room()&&room().id===d.roomId)renderLog()});
 es.addEventListener('doc',async()=>{await loadDoc();if($('docVeil').classList.contains('open')&&docMode!=='edit')renderDoc()});
 }
+
+/* ===== 홈페이지 봇: 미리보기·게시 ===== */
+function siteCard(m){
+ const st=S.site||{}, live=st.published===m.site.versionId, slug=st.slug||(S.me.loginId||'').replace(/[^a-z0-9-]/g,'-').replace(/^-+|-+$/g,'');
+ return `<div class="sitecard" data-sitev="${m.site.versionId}"><div class="acts"><a class="btn ghost" href="/api/site/preview?id=${m.site.versionId}" target="_blank" rel="noopener">미리보기 ↗</a><a class="btn ghost" href="/api/site/download?id=${m.site.versionId}">HTML 내려받기</a>${live?`<span class="live">● 게시 중 v${m.site.n}</span>`:''}</div>
+ ${live?`<div class="acts"><a href="${esc(st.url)}" target="_blank" rel="noopener">${esc(location.origin+'/s/'+st.slug)}</a><button class="btn ghost" type="button" data-unpub>게시 중단</button></div>`:`<div class="slug"><span>${esc(location.origin)}/s/</span><input class="field" data-slug value="${esc(slug)}" aria-label="홈페이지 주소" ${st.slug?'':''}></div><div class="acts"><button class="btn" type="button" data-pub>이 버전 게시하기</button><span class="note" style="padding:0">게시하면 로그인 없이 누구나 볼 수 있어요.</span></div>`}
+ <div class="payerr" data-siteerr></div></div>`}
+$('log').addEventListener('click',async e=>{
+ const c=e.target.closest('.sitecard');if(!c)return;const t=e.target.closest('button');if(!t)return;const err=c.querySelector('[data-siteerr]');
+ if(t.hasAttribute('data-pub')){t.disabled=true;t.textContent='게시하고 확인하는 중…';const j=await api('/api/site/publish',{versionId:c.dataset.sitev,slug:c.querySelector('[data-slug]').value.trim(),roomId:room().id});if(j.error||!j.ok){err.textContent=j.error||'게시 후 확인에 실패했어요.';t.disabled=false;t.textContent='이 버전 게시하기'}return}
+ if(t.hasAttribute('data-unpub')){if(t.textContent!=='정말 내릴까요?'){t.textContent='정말 내릴까요?';return}const j=await api('/api/site/unpublish',{});if(j.error)err.textContent=j.error;else load();return}
+},true);
 
 /* ===== 기업 정보 문서 ===== */
 let DOCS=null, docMode='view', docSel=null, docDirty=false;

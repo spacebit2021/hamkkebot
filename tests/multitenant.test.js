@@ -39,6 +39,7 @@ const chk=(n,c)=>{if(!c)FAILS++;console.log((c?'PASS ':'FAIL ')+n)};
  chk('u2 cannot post in u1 room',(await U2(`/api/rooms/${r1}/messages`,{text:'hack'})).s===404);
  chk('user cannot call admin api',(await U1('/api/admin/state')).s===401);
  chk('admin session cannot call user api',(await A('/api/state')).s===401);
+ { const oo=(await A('/api/admin/state')).j.orgs.find(o=>o.name==='빵공방').id; await A(`/api/admin/orgs/${oo}/charge`,{amount:1}); }
  await U1(`/api/rooms/${r1}/invite`,{botId:'mkt'});
  await U1('/api/org',{name:'빵공방',mission:'우리밀'});
  await U1(`/api/rooms/${r1}/messages`,{text:'홍보',to:'mkt'});await sl(100);
