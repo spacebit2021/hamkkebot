@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>할 일표 고치기 · 함께봇</title>
+<style>
+:root{color-scheme:light dark;--bg:light-dark(#fff,#0f1117);--side:light-dark(#f4f5f8,#171a23);--ink:light-dark(#16171d,#eef0f6);--mute:light-dark(#5d6170,#a3a8b8);--line:light-dark(#e2e4ec,#2a2e3b);--pri:light-dark(#c2410c,#fb8c55);--pri-ink:light-dark(#fff,#15110e);--bad:light-dark(#c0261c,#ff8a80);--ok:light-dark(#1a7f37,#6fdc8c)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Malgun Gothic","Noto Sans KR",system-ui,sans-serif}
+button,input,select{font:inherit;color:inherit}:focus-visible{outline:3px solid #ffc531;outline-offset:2px}
+.wrap{max-width:980px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:0}h2{font-size:18px;margin:28px 0 10px}.mute{color:var(--mute);font-size:14px}
+.top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.btn{min-height:44px;padding:0 16px;border-radius:12px;border:0;background:var(--pri);color:var(--pri-ink);font-weight:700;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.btn.ghost{background:transparent;color:var(--ink);border:1.5px solid var(--line)}.btn.sm{min-height:40px;padding:0 12px;font-size:14px}.btn:disabled{opacity:.5}
+.field{min-height:44px;padding:8px 10px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);width:100%}
+label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute)}
+.box{background:var(--side);border-radius:14px;padding:14px 16px}
+.rv{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}.dd{background:var(--pri);color:var(--pri-ink);border-radius:8px;padding:1px 9px;font-weight:700}
+.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:10px}.grid .wide{grid-column:1/-1}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.filters .field{width:auto}
+.owner{margin:18px 0 6px;font-size:16px}
+.item{border:1.5px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px}
+.item.done{opacity:.75}.item.cancelled{opacity:.6}.item.over{border-color:var(--bad)}
+.item .head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px;font-size:14px}
+.st{font-size:12px;padding:2px 8px;border-radius:8px;background:var(--side)}.st.over{color:var(--bad);font-weight:700}
+.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.msg{min-height:22px;font-size:14px;margin-top:6px}.msg.err{color:var(--bad)}.msg.ok{color:var(--ok)}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-size:14px;max-width:92vw}
+ol.log{list-style:none;padding:0;margin:0}ol.log li{border-bottom:1px solid var(--line);padding:8px 0;font-size:14px}
+</style>
+</head>
+<body>
+<main class="wrap" id="app" aria-live="polite"><p class="mute">불러오는 중…</p></main>
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="/todo-edit.js"></script>
+</body>
+</html>

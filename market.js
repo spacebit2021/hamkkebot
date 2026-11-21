@@ -4,7 +4,7 @@
 const dns = require('dns').promises;
 const net = require('net');
 
-const KINDS = { chat: '글로 답하는 봇', site: '홈페이지(랜딩페이지) 봇', ir: 'IR 자료 봇', sched: '일정 봇' };
+const KINDS = { chat: '글로 답하는 봇', site: '홈페이지(랜딩페이지) 봇', ir: 'IR 자료 봇', sched: '일정 봇', todo: '할 일 봇 (개인 할 일·정기 점검)' };
 
 // ----- 서버가 사용자 URL을 읽을 때 내부망·클라우드 메타데이터 접근 차단 (SSRF 방지) -----
 function privateIp(ip) {
@@ -108,7 +108,7 @@ const CLAUDE_PROMPT = `함께봇(사회적기업용 전문가 봇 플랫폼)에 
   "role": "봇의 역할 지시문 (4000자 이내). 누구를 위해 무엇을 어떻게 하는지, 지켜야 할 규칙"
 }
 
-- kind: chat(글로 답함) · site(랜딩페이지 제작) · ir(IR 자료) · sched(일정 관리) 중 하나
+- kind: chat(글로 답함) · site(랜딩페이지 제작) · ir(IR 자료) · sched(일정 관리) · todo(개인 할 일·2주 점검) 중 하나
 - ppt: chat 봇이 "PPT 만들어 줘" 요청에 발표자료(.pptx)도 만들게 하려면 true
 - role에는 사실만 쓰고 수치·인증·후기를 지어내지 말라는 규칙을 넣어 주세요.
 

@@ -107,6 +107,7 @@ button{cursor:pointer}
 .docerr{font-size:14px;color:#d1453b;min-height:20px}.docok{font-size:14px;color:#06784f;min-height:20px}
 @media(max-width:760px){.cmp{grid-template-columns:minmax(0,1fr)}.docview{padding:14px}}
 .sitelink{text-decoration:none;color:inherit}
+.todobox .docbtn{margin-bottom:6px}.todoacts{display:flex;gap:6px;margin:0 14px 10px}.todoacts .btn{flex:1;min-height:40px;font-size:13px;padding:0 8px;text-decoration:none;display:flex;align-items:center;justify-content:center}
 .docbtn[hidden]{display:none}
 .sitecard{margin-top:8px;border:1.5px solid #0e8f7e;border-radius:14px;padding:12px 14px;background:var(--card);display:flex;flex-direction:column;gap:10px;max-width:520px}
 .sitecard .acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.sitecard a.btn{display:inline-flex;align-items:center;text-decoration:none}
@@ -183,6 +184,7 @@ textarea.field{min-height:80px;resize:vertical}
   <button class="docbtn" id="docBtn" type="button"><span>기업 정보 문서</span><span class="badge" id="docBadge" hidden></span></button>
   <button class="docbtn" id="irBtn" type="button"><span>IR 자료</span><span class="badge" id="irBadge" hidden></span></button>
   <a class="docbtn sitelink" id="schedLink" target="_blank" rel="noopener" hidden><span>일정표 (간트차트)</span><span class="note" style="padding:0" id="schedLinkN"></span></a>
+  <div class="todobox" id="todoBox" hidden><a class="docbtn sitelink" id="todoLink" target="_blank" rel="noopener"><span>할 일표</span><span class="note" style="padding:0" id="todoLinkN"></span></a><div class="todoacts"><a class="btn ghost sm" id="todoEdit" target="_blank" rel="noopener">고치기 ↗</a><button class="btn ghost sm" type="button" id="todoReset">링크 새로 만들기</button></div></div>
   <a class="docbtn sitelink" id="siteLink" target="_blank" rel="noopener" hidden><span>우리 홈페이지</span><span class="note" style="padding:0" id="siteLinkN"></span></a>
   <div class="wallet" id="wallet"><span>상담 토큰</span><b id="walletN">0</b></div>
   <nav class="rooms" id="rooms" aria-label="채팅방"></nav>
@@ -323,7 +325,7 @@ function renderTop(){
 function msgHTML(m,i){
  if(m.from==='sys'&&m.botReq){const q=m.botReq,dd=q.def,head=`<div class="msg sys">${esc(m.text)}</div>`;
   if(q.status)return head+`<div class="msg sys">${q.status==='approved'?'승인했어요':'승인하지 않았어요'}</div>`;
-  return head+`<div class="paycard botreq" data-botreq="${m.id}" data-bot="${q.botId}"><b>${esc(dd.name)} ${q.kind==='update'?'업데이트':'새 봇'} · ${esc(({chat:'글 답변',site:'홈페이지',ir:'IR',sched:'일정'})[dd.kind]||dd.kind)}${dd.ppt?' + PPT':''}</b><div class="paycalc">${esc(dd.desc)}</div>${dd.quick.length?`<div class="paycalc">빠른 요청: ${dd.quick.map(esc).join(' · ')}</div>`:''}<details class="prof"><summary>역할 지시문 보기</summary><p style="white-space:pre-wrap">${esc(dd.role)}</p></details>${q.sourceUrl?`<div class="paycalc">출처: ${esc(q.sourceUrl)}</div>`:''}<div class="acts"><button class="btn" type="button" data-bok>승인</button><button class="btn ghost" type="button" data-bno>거절</button></div><div class="payerr" data-err></div></div>`}
+  return head+`<div class="paycard botreq" data-botreq="${m.id}" data-bot="${q.botId}"><b>${esc(dd.name)} ${q.kind==='update'?'업데이트':'새 봇'} · ${esc(({chat:'글 답변',site:'홈페이지',ir:'IR',sched:'일정',todo:'할 일'})[dd.kind]||dd.kind)}${dd.ppt?' + PPT':''}</b><div class="paycalc">${esc(dd.desc)}</div>${dd.quick.length?`<div class="paycalc">빠른 요청: ${dd.quick.map(esc).join(' · ')}</div>`:''}<details class="prof"><summary>역할 지시문 보기</summary><p style="white-space:pre-wrap">${esc(dd.role)}</p></details>${q.sourceUrl?`<div class="paycalc">출처: ${esc(q.sourceUrl)}</div>`:''}<div class="acts"><button class="btn" type="button" data-bok>승인</button><button class="btn ghost" type="button" data-bno>거절</button></div><div class="payerr" data-err></div></div>`}
  if(m.from==='sys'&&m.join){const j=m.join,head=`<div class="msg sys">${esc(m.text)}</div>`;
   if(j.status)return head+`<div class="msg sys">${j.status==='approved'?'참여를 승인했어요':'참여 요청을 거절했어요'}</div>`;
   const mins=j.rate?Math.floor(S.wallet/j.rate*60):0, low=S.wallet<j.rate;
@@ -338,7 +340,7 @@ function msgHTML(m,i){
  if(m.from==='tg')return `<div class="msg">${tgAv(m.name)}<div><div class="who">${esc(m.name)}<span class="src">텔레그램</span></div><div class="bubble">${esc(m.text)}</div></div></div>`;
  if(m.from==='hx'){const x=expById(m.expertId)||{name:m.name,color:'#06a77d'};return `<div class="msg">${xAv(x)}<div><div class="who">${esc(m.name)}<span class="human">사람 전문가</span></div><div class="bubble">${esc(m.text)}</div></div></div>`}
  const b=botById(m.from)||{name:'봇',short:'봇',color:'#888'};
- return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.site?siteCard(m):''}${m.sched&&m.sched.url?`<div class="sitecard"><div class="acts"><a class="btn" href="${esc(m.sched.url)}" target="_blank" rel="noopener">일정표 열기 ↗</a><span class="note" style="padding:0">간트차트 · 버전 ${m.sched.v} · 텔레그램 일정방에도 같은 내용이 갔어요</span></div></div>`:''}${m.ir?`<div class="sitecard"><div class="acts"><button class="btn" type="button" data-openir>IR 자료 열기</button><span class="note" style="padding:0">${m.ir.vc?`투자사 ${m.ir.count}곳 · 출처 포함`:`v${m.ir.n} · ${m.ir.count}장${m.ir.applied?` · 코멘트 ${m.ir.applied}개 반영`:''}`}</span></div></div>`:''}${m.deck?`<div class="sitecard deckcard"><div class="acts"><a class="btn" href="/api/deck/download?id=${m.deck.id}">PPT 내려받기 (.pptx)</a><span class="note" style="padding:0">${m.deck.count}장 · 발표자 메모 포함 · PowerPoint·Keynote·Google 슬라이드에서 열려요</span></div></div>`:''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
+ return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.site?siteCard(m):''}${m.todo&&m.todo.url?`<div class="sitecard"><div class="acts"><a class="btn" href="${esc(m.todo.url)}" target="_blank" rel="noopener">할 일표 열기 ↗</a>${S.todo?`<a class="btn ghost" href="${esc(S.todo.editUrl)}" target="_blank" rel="noopener">고치기 ↗</a>`:''}</div></div>`:''}${m.sched&&m.sched.url?`<div class="sitecard"><div class="acts"><a class="btn" href="${esc(m.sched.url)}" target="_blank" rel="noopener">일정표 열기 ↗</a><span class="note" style="padding:0">간트차트 · 버전 ${m.sched.v} · 텔레그램 일정방에도 같은 내용이 갔어요</span></div></div>`:''}${m.ir?`<div class="sitecard"><div class="acts"><button class="btn" type="button" data-openir>IR 자료 열기</button><span class="note" style="padding:0">${m.ir.vc?`투자사 ${m.ir.count}곳 · 출처 포함`:`v${m.ir.n} · ${m.ir.count}장${m.ir.applied?` · 코멘트 ${m.ir.applied}개 반영`:''}`}</span></div></div>`:''}${m.deck?`<div class="sitecard deckcard"><div class="acts"><a class="btn" href="/api/deck/download?id=${m.deck.id}">PPT 내려받기 (.pptx)</a><span class="note" style="padding:0">${m.deck.count}장 · 발표자 메모 포함 · PowerPoint·Keynote·Google 슬라이드에서 열려요</span></div></div>`:''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
 }
 function renderLog(){
  const r=room(); if(!r)return;
@@ -350,7 +352,7 @@ function renderLog(){
  for(const id in keep){const c=document.querySelector(`.paycard[data-pay="${id}"]`);if(c){c.querySelector('[data-amtin]').value=keep[id][0];c.querySelector('[data-memo]').value=keep[id][1]}}
  $('log').scrollTop=$('log').scrollHeight;
 }
-function render(){$('walletN').textContent=S.wallet||0;{const sc=S.sched;$('schedLink').hidden=!sc;if(sc){$('schedLink').href=sc.url;$('schedLinkN').textContent=`버전 ${sc.v} ↗`}}{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
+function render(){$('walletN').textContent=S.wallet||0;{const sc=S.sched;$('schedLink').hidden=!sc;if(sc){$('schedLink').href=sc.url;$('schedLinkN').textContent=`버전 ${sc.v} ↗`}}{const td=S.todo;$('todoBox').hidden=!td;if(td){$('todoLink').href=td.url;$('todoEdit').href=td.editUrl;$('todoLinkN').textContent=`${td.count}개 · 점검 ${td.left===0?'오늘':'D-'+td.left} ↗`}}{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
 
 let callOpen=null, reviewMsg=null, xq='', xsort='';
 function renderBots(){
@@ -462,6 +464,7 @@ es=new EventSource('/api/events');
 es.onerror=()=>{if(es&&es.readyState===2){es=null;load().catch(()=>{})}};
 es.addEventListener('room',e=>{const d=JSON.parse(e.data);if(d.roomId)delete typing[d.roomId];clearTimeout(t);t=setTimeout(async()=>{const wasTg=room()&&room().tgChatId;await load();if($('tgVeil').classList.contains('open')&&!wasTg&&room().tgChatId)renderTg()},120)});
 es.addEventListener('typing',e=>{const d=JSON.parse(e.data);typing[d.roomId]=d.botId;if(room()&&room().id===d.roomId)renderLog()});
+es.addEventListener('todo',()=>{clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),150)});
 es.addEventListener('sched',()=>{clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),150)});
 es.addEventListener('ir',async()=>{await loadIr();if($('irVeil').classList.contains('open')&&!document.activeElement.matches('#irMain textarea'))renderIr()});
 es.addEventListener('doc',async()=>{await loadDoc();if($('docVeil').classList.contains('open')&&docMode!=='edit')renderDoc()});
@@ -479,6 +482,7 @@ $('log').addEventListener('click',async e=>{
  if(t.hasAttribute('data-unpub')){if(t.textContent!=='정말 내릴까요?'){t.textContent='정말 내릴까요?';return}const j=await api('/api/site/unpublish',{});if(j.error)err.textContent=j.error;else load();return}
 },true);
 
+$('todoReset').addEventListener('click',async e=>{const b=e.currentTarget;if(b.textContent!=='정말 바꿀까요?'){b.textContent='정말 바꿀까요?';return}b.disabled=true;await api('/api/todo/token',{});b.disabled=false;b.textContent='링크 새로 만들기';load().catch(()=>{})});
 /* ===== 봇 마켓 ===== */
 let MK=null, mkDraft=null, mkTarget=null;
 const ST={pending:'공개 심사 중',public:'다른 기업에 공개 중',rejected:'공개 거절됨'};

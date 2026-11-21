@@ -21,7 +21,7 @@ const SCHED_RE = /(\d{1,2}\s*[/.월]\s*\d{1,2}|\d{1,2}\s*일|오늘|내일|모�
 const STATUS = { active: '진행', done: '완료', cancelled: '취소' };
 
 // ops: Claude가 만든 변경 목록 → 검사 후 적용. 잘못된 것은 errors로
-function applyOps(sched, ops, by, source) {
+function applyOps(sched, ops, by, source, opt = {}) {
   const applied = [], errors = [];
   const find = id => sched.items.find(x => x.id === id);
   const clean = v => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
@@ -37,6 +37,11 @@ function applyOps(sched, ops, by, source) {
     }
     const it = find(o && o.id);
     if (!it) { errors.push('바꿀 일정을 찾지 못했어요'); continue; }
+    if (op === 'delete' && opt.allowDelete) {
+      sched.items.splice(sched.items.indexOf(it), 1);
+      applied.push({ id: it.id, op, summary: `삭제: "${it.title}" ${range(it)}` });
+      continue;
+    }
     if (op === 'cancel') {
       if (it.status === 'cancelled') { errors.push(`"${it.title}"은(는) 이미 취소됐어요`); continue; }
       it.status = 'cancelled';
@@ -53,13 +58,13 @@ function applyOps(sched, ops, by, source) {
       if (!end) end = isDate(o.start) ? addDays(start, diffDays(it.start, it.end)) : it.end; // 시작만 바뀌면 기간 유지
       if (end < start || diffDays(start, end) > 366) { errors.push(`"${it.title}"의 날짜가 맞지 않아요`); continue; }
       if (start !== it.start || end !== it.end) {
-        const kind = toMs(start) > toMs(it.start) ? '연기' : toMs(start) < toMs(it.start) ? '당김' : '기간 변경';
+        const kind = toMs(start) > toMs(it.start) ? '연기' : toMs(start) < toMs(it.start) ? '당김' : end > it.end ? '마감 연기' : '마감 당김';
         it.start = start; it.end = end;
         ch.push(`${kind} ${range(before)} → ${range(it)}`);
       }
       if (clean(o.title) && clean(o.title) !== it.title) { it.title = clean(o.title).slice(0, 60); ch.push(`제목 "${before.title}" → "${it.title}"`); }
       if (o.owner != null && clean(o.owner) !== it.owner) { it.owner = clean(o.owner).slice(0, 30); ch.push(`담당 ${before.owner || '없음'} → ${it.owner || '없음'}`); }
-      if (o.note != null && clean(o.note) && clean(o.note) !== it.note) { it.note = clean(o.note).slice(0, 200); ch.push('메모 변경'); }
+      if (o.note != null && (clean(o.note) || opt.exact) && clean(o.note).slice(0, 200) !== it.note) { it.note = clean(o.note).slice(0, 200); ch.push('메모 변경'); }
       if (it.status === 'cancelled' && ch.length) { it.status = 'active'; ch.push('다시 진행'); }
       if (!ch.length) { errors.push(`"${it.title}"에 바뀐 내용이 없어요`); continue; }
       applied.push(push(it, op, `"${before.title}" ${ch.join(', ')}`));
@@ -79,7 +84,8 @@ function applyOps(sched, ops, by, source) {
 const listForAi = sched => sched.items.map(x => `- id ${x.id} | ${x.title} | ${x.start} ~ ${x.end} | 담당 ${x.owner || '-'} | ${STATUS[x.status]}${x.note ? ' | ' + x.note : ''}`).join('\n') || '(아직 일정 없음)';
 
 // ---------- 간트차트 일정표 HTML ----------
-function renderGantt(org, sched) {
+function renderGantt(org, sched, opt = {}) {
+  const L = { title: '일정표', item: '일정', by: '함께봇 일정 봇', empty: '아직 일정이 없어요. 텔레그램 일정방에 일정을 올리면 여기에 그려져요.', ...opt };
   const today = kstDate();
   const items = sched.items.slice().sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end));
   const shown = items.filter(x => x.status !== 'cancelled' || diffDays(x.end, today) < 30);
@@ -105,11 +111,11 @@ function renderGantt(org, sched) {
   const head = `<div class="row head"><div class="lab"></div><div class="track" style="width:${N * CW}px"><div class="months">${months.map(m => `<span style="left:${m.i * CW}px;width:${m.n * CW}px">${+m.k.slice(0, 4)}년 ${+m.k.slice(5)}월</span>`).join('')}</div><div class="days">${days.map(d => { const w = new Date(toMs(d)).getUTCDay(); return `<span class="${w === 0 ? 'sun' : w === 6 ? 'sat' : ''}${d === today ? ' now' : ''}">${+d.slice(8)}</span>`; }).join('')}</div></div></div>`;
   const list = items.map(it => `<tr id="${esc(it.id)}" class="${it.status}"><td>${esc(it.title)}${it.note ? `<div class="muted">${esc(it.note)}</div>` : ''}</td><td class="nw">${esc(range(it))}</td><td>${esc(it.owner || '-')}</td><td class="nw">${STATUS[it.status]}</td><td>${it.history.slice(-1).map(h => `<span class="muted">${esc(h.summary)}</span>`).join('')}</td></tr>`).join('');
   const details = items.filter(it => it.detail).map(it => `<section class="detail" id="d-${esc(it.id)}"><h3>${esc(it.title)} <small>${esc(range(it))}</small></h3>${it.detail}</section>`).join('');
-  const log = sched.log.slice(0, 40).map(l => `<li><span class="muted nw">${new Date(l.at + 9 * 36e5).toISOString().slice(5, 16).replace('T', ' ')} · ${esc(l.by)}${l.source === 'telegram' ? ' (텔레그램)' : l.source === 'web' ? ' (기업방)' : ''}</span><br>${l.changes.map(esc).join('<br>')}</li>`).join('');
+  const log = sched.log.slice(0, 40).map(l => `<li><span class="muted nw">${new Date(l.at + 9 * 36e5).toISOString().slice(5, 16).replace('T', ' ')} · ${esc(l.by)}${l.source === 'telegram' ? ' (텔레그램)' : l.source === 'web' ? ' (기업방)' : l.source === 'edit' ? ' (편집 링크)' : l.source === 'auto' ? ' (자동)' : ''}</span><br>${l.changes.map(esc).join('<br>')}</li>`).join('');
   const updated = sched.updatedAt ? new Date(sched.updatedAt + 9 * 36e5).toISOString().slice(0, 16).replace('T', ' ') : '-';
   return `<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(org.name)} 일정표</title>
+<title>${esc(org.name)} ${L.title}</title>
 <style>
 :root{--ink:#17202b;--mute:#667085;--line:#e4e7ec;--acc:#0e7c86;--accl:#d7f0f1;--done:#98a2b3;--bg:#fff;--soft:#f6f8fa}
 *{box-sizing:border-box}body{margin:0;font:15px/1.55 "Malgun Gothic","Noto Sans KR",system-ui,sans-serif;color:var(--ink);background:var(--bg)}
@@ -134,16 +140,17 @@ tr.cancelled td:first-child{text-decoration:line-through;color:var(--mute)}tr:ta
 .detail{border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:12px}.detail:target{outline:2px solid var(--acc)}
 .detail table{font-size:13px}.detail mark{background:#fff1b8}
 ol.log{list-style:none;padding:0;margin:0}ol.log li{padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
+${L.css || ''}
 @media(max-width:640px){.lab{width:140px}h1{font-size:23px}table{font-size:13px}}
 @media print{.gantt{overflow:visible}}
 </style></head><body><div class="wrap">
-<div class="top"><div><h1>${esc(org.name)} 일정표</h1><div class="muted">마지막 수정 ${updated} · 버전 ${sched.v || 0} · 함께봇 일정 봇</div></div>
+<div class="top"><div><h1>${esc(org.name)} ${L.title}</h1><div class="muted">마지막 수정 ${updated} · 버전 ${sched.v || 0} · ${L.by}</div></div>
 <div class="legend"><span><i style="background:var(--acc)"></i>진행</span><span><i style="background:var(--done)"></i>완료</span><span><i style="background:repeating-linear-gradient(45deg,#d0d5dd 0 4px,#eaecf0 4px 8px)"></i>취소</span><span><i style="background:#f04438;width:3px"></i>오늘</span></div></div>
-<h2>간트차트</h2>${clipped ? '<p class="muted">기간이 길어 오늘 앞뒤 넉 달만 보여요. 전체는 아래 목록에 있어요.</p>' : ''}
-${shown.length ? `<div class="gantt">${head}${rows}</div>` : '<p class="muted">아직 일정이 없어요. 텔레그램 일정방에 일정을 올리면 여기에 그려져요.</p>'}
-<h2>일정 목록</h2><table><thead><tr><th>일정</th><th>기간</th><th>담당</th><th>상태</th><th>최근 변경</th></tr></thead><tbody>${list || '<tr><td colspan="5" class="muted">없음</td></tr>'}</tbody></table>
+${L.top || ''}<h2>간트차트</h2>${clipped ? '<p class="muted">기간이 길어 오늘 앞뒤 넉 달만 보여요. 전체는 아래 목록에 있어요.</p>' : ''}
+${shown.length ? `<div class="gantt">${head}${rows}</div>` : `<p class="muted">${L.empty}</p>`}
+<h2>${L.item} 목록</h2><table><thead><tr><th>${L.item}</th><th>${L.period || '기간'}</th><th>담당</th><th>상태</th><th>최근 변경</th></tr></thead><tbody>${list || '<tr><td colspan="5" class="muted">없음</td></tr>'}</tbody></table>
 ${details ? `<h2>상세 계획</h2>${details}` : ''}
-<h2>변경 기록</h2><ol class="log">${log || '<li class="muted">없음</li>'}</ol>
+${L.bottom || ''}<h2>변경 기록</h2><ol class="log">${log || '<li class="muted">없음</li>'}</ol>
 </div></body></html>`;
 }
 

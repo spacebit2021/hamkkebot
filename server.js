@@ -27,6 +27,7 @@ const BOTS = require('./bots');
 const DOC = require('./doc');
 const DECK = require('./deck');
 const SCHED = require('./sched');
+const TODO = require('./todo');
 const MARKET = require('./market');
 // 기본 봇 + 기업이 직접 만든 봇(S.customBots). 직접 만든 봇은 승인된 정의(def)가 있을 때만 쓸 수 있음
 const BUILTIN_ROLE = kind => (BOTS.find(b => b.kind === kind) || {}).role || '';
@@ -293,6 +294,7 @@ async function runBot(room, botId, text, ctx = {}) {
   const isDeck = !!bot.ppt && PPT_RE.test(text);
   if (bot.kind === 'site') run = () => runSiteBot(bot, room, org, text);
   else if (bot.kind === 'sched') { const mode = schedMode(text); costId = mode === 'detail' ? 'sched_detail' : mode === 'ppt' ? 'sched_ppt' : 'sched'; run = () => runSchedBot(bot, room, org, text, mode, ctx); }
+  else if (bot.kind === 'todo') { const mode = ctx.auto ? 'review' : todoMode(text); costId = mode === 'review' ? 'todo_review' : mode === 'detail' ? 'todo_detail' : mode === 'ppt' ? 'todo_ppt' : 'todo'; run = () => runSchedBot(bot, room, org, text, mode, ctx, 'todo'); }
   else if (bot.kind === 'ir') { const mode = irMode(org, text); costId = mode === 'create' ? 'ir' : mode === 'vc' ? 'ir_vc' : 'ir_update'; run = () => runIrBot(bot, room, org, text, mode); }
   else if (isDeck) { costId = bot.custom ? 'custom_ppt' : `${bot.id}_ppt`; run = () => runDeckBot(bot, room, org, text); }
   else run = () => askClaude(bot, room, text);
@@ -318,11 +320,11 @@ async function runBot(room, botId, text, ctx = {}) {
   const r = await run();
   if (r.silent) return refundTokens(org, cost + share); // 일정 이야기가 아니었음: 조용히 넘어감
   if (r.error) { refundTokens(org, cost + share); return say(`${r.error}${cost + share ? ' (토큰은 쓰지 않았어요)' : ''}`); }
-  if (r.free) { refundTokens(org, cost + share); return say(r.text, { ...(r.sched ? { sched: r.sched } : {}) }); } // 질문·링크 안내는 무료
+  if (r.free) { refundTokens(org, cost + share); return say(r.text, { ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}) }); } // 질문·링크 안내는 무료
   chargeRecord(org, cost, { botId: costId, botName: costName, roomId: room.id, roomName: room.name });
   if (bot.custom) { const c = S.customBots.find(x => x.id === bot.id); if (c) { c.stats = c.stats || { uses: 0, earned: 0, byOrg: {} }; c.stats.uses++; c.stats.byOrg[org.id] = (c.stats.byOrg[org.id] || 0) + 1; } }
   if (share) payShare(org, cb, share, 'share', room);
-  say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}) });
+  say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}) });
   if (r.after) r.after();
   if (r.deck && room.tgChatId) { const d = deckById(org, r.deck.id); if (d) tgSendDoc(room.tgChatId, deckFileName(org, d), await DECK.buildDeck(d.outline, org.name), `${d.title} (PPT v${d.n})`, PPTX_MIME); }
 }
@@ -423,71 +425,138 @@ function schedMode(text) {
 }
 const todayLine = () => { const t = SCHED.kstDate(); return `오늘은 ${t} (${SCHED.wd(t)}요일), 한국 시간입니다.`; };
 const parseJson = t => { try { return JSON.parse(String(t).slice(String(t).indexOf('{'), String(t).lastIndexOf('}') + 1)); } catch (e) { return null; } };
-async function runSchedBot(bot, room, org, text, mode, ctx) {
-  const sc = ensureSched(org), url = schedUrl(org), who = ctx.author || '기업방', source = ctx.source || 'web';
+// kind 'todo'이면 할 일 봇: 같은 기능(추가·변경·연기·취소·완료·상세 계획·보고 PPT)을 할 일표(org.todo)에 적용
+async function runSchedBot(bot, room, org, text, mode, ctx, kind = 'sched') {
+  const T = kind === 'todo';
+  const sc = T ? ensureTodo(org) : ensureSched(org), url = T ? todoUrl(org) : schedUrl(org), who = ctx.author || '기업방', source = ctx.source || 'web';
+  const W = T ? { box: '할 일표', it: '할 일', ev: 'todo' } : { box: '일정표', it: '일정', ev: 'sched' };
+  const card = (u = url) => T ? { todo: { v: sc.v, url: u } } : { sched: { v: sc.v, url: u } };
   const linkNote = PUBLIC_URL ? '' : ' (서버에 PUBLIC_URL을 설정하면 전체 주소로 보여요)';
-  if (mode === 'link') return { free: true, text: `일정표 (간트차트): ${url}${linkNote}\n지금 일정 ${sc.items.filter(x => x.status === 'active').length}개 · 버전 ${sc.v}`, sched: { v: sc.v, url } };
+  if (mode === 'review') return runTodoReview(bot, room, org, text, ctx);
+  if (mode === 'edit') return { free: true, text: `할 일표 편집 링크: ${todoEditUrl(org)}${linkNote}\n링크를 아는 사람은 누구나 고칠 수 있어요. 직원들끼리만 나눠 주세요. 기업방 웹앱의 "할 일표 링크 새로 만들기"로 바꿀 수 있어요.`, ...card() };
+  if (mode === 'link') {
+    if (T) { const t = todayKst(), nx = TODO.upcoming(sc, t); return { free: true, text: `할 일표: ${url}${linkNote}\n고치기: ${todoEditUrl(org)}\n진행 중 ${sc.items.filter(x => x.status === 'active').length}개 · 다음 ${sc.cycle.days}일 점검 ${SCHED.md(nx)} (${TODO.leftText(SCHED.diffDays(t, nx))})`, ...card() }; }
+    return { free: true, text: `일정표 (간트차트): ${url}${linkNote}\n지금 일정 ${sc.items.filter(x => x.status === 'active').length}개 · 버전 ${sc.v}`, ...card() };
+  }
   if (mode === 'change') {
-    const system = `${bot.role}\n${todayLine()}\n\n[현재 일정]\n${SCHED.listForAi(sc)}\n
-아래 메시지가 일정 추가·변경·연기·당김·취소·완료에 관한 것이면 변경 목록을 만드세요. 일정과 상관없는 대화면 ops를 비우세요.
+    const system = `${bot.role}\n${todayLine()}\n\n[현재 ${W.it}]\n${SCHED.listForAi(sc)}\n
+아래 메시지가 ${W.it} 추가·변경·연기·당김·취소·완료에 관한 것이면 변경 목록을 만드세요. ${W.it}과(와) 상관없는 대화면 ops를 비우세요.
 JSON 하나만 출력: {"ops":[...], "ask":"날짜·대상이 모호할 때만 짧은 질문"}
 - 추가: {"op":"add","title":"짧은 제목","start":"YYYY-MM-DD","end":"YYYY-MM-DD","owner":"말에 있을 때만","note":""}
 - 날짜·기간·제목·담당 변경, 연기, 당김: {"op":"update","id":"기존 id","start":"YYYY-MM-DD","end":"YYYY-MM-DD","title":"","owner":""} (바뀌는 칸만)
-- 취소: {"op":"cancel","id":"","reason":""} / 완료: {"op":"done","id":""} / 취소한 일정 다시 진행: {"op":"restore","id":""}
-- "다음 주 화요일", "3일간" 같은 말은 오늘 기준으로 날짜를 계산하세요. 하루짜리면 start=end.`;
+- 취소: {"op":"cancel","id":"","reason":""} / 완료: {"op":"done","id":""} / 취소한 ${W.it} 다시 진행: {"op":"restore","id":""}
+- "다음 주 화요일", "3일간" 같은 말은 오늘 기준으로 날짜를 계산하세요. 하루짜리면 start=end.${T ? `
+[할 일 규칙] start는 시작일(말이 없으면 오늘), end는 마감일입니다. 마감을 알 수 없으면 ops를 비우고 ask로 마감을 물으세요. owner는 말에 다른 사람이 없으면 말한 사람 "${who}"입니다. "다 했어요", "끝냈어요"는 그 사람의 할 일 완료(done)입니다.` : ''}`;
     const r = await callClaude(system, `[${who}${source === 'telegram' ? ' · 텔레그램' : ' · 기업방'}] ${text}`, 1500);
     if (r.error) return ctx.silent ? { silent: true } : { error: r.error };
     const j = parseJson(r.text) || {};
     if (!Array.isArray(j.ops) || !j.ops.length) {
       if (j.ask) return { free: true, text: `${str(j.ask, 200)}` };
-      return ctx.silent ? { silent: true } : { free: true, text: `바꿀 일정을 찾지 못했어요. "12/3 구청 회의 추가", "납품 준비 다음 주 월요일로 연기"처럼 말해 주세요.\n일정표: ${url}` };
+      return ctx.silent ? { silent: true } : { free: true, text: T ? `바꿀 할 일을 찾지 못했어요. "금요일까지 구청 보고서", "보고서 다 했어요", "견적서 다음 주 수요일로 미뤄 줘"처럼 말해 주세요.\n할 일표: ${url}` : `바꿀 일정을 찾지 못했어요. "12/3 구청 회의 추가", "납품 준비 다음 주 월요일로 연기"처럼 말해 주세요.\n일정표: ${url}` };
     }
     const res = SCHED.applyOps(sc, j.ops, who, source);
-    if (!res.applied.length) return { free: true, text: `일정을 고치지 못했어요: ${res.errors.join(' / ')}` };
-    save(); emit('sched', {}, org.id);
-    return { text: `일정표를 고쳤어요 (버전 ${sc.v})\n${res.applied.map(a => '· ' + a.summary).join('\n')}${res.errors.length ? `\n(적용 못 한 것: ${res.errors.join(' / ')})` : ''}\n\n일정표: ${url}${linkNote}`, sched: { v: sc.v, url } };
+    if (!res.applied.length) return { free: true, text: `${W.it}을(를) 고치지 못했어요: ${res.errors.join(' / ')}` };
+    save(); emit(W.ev, {}, org.id);
+    return { text: `${W.box}를 고쳤어요 (버전 ${sc.v})\n${res.applied.map(a => '· ' + a.summary).join('\n')}${res.errors.length ? `\n(적용 못 한 것: ${res.errors.join(' / ')})` : ''}\n\n${W.box}: ${url}${linkNote}`, ...card() };
   }
   if (mode === 'detail') {
     const live = sc.items.filter(x => x.status !== 'cancelled');
-    if (!live.length) return { free: true, text: '아직 일정이 없어요. 먼저 일정을 올려 주세요.' };
-    const system = `${bot.role}\n${todayLine()}\n\n[우리 기업]\n${orgContext(org)}\n\n[현재 일정]\n${SCHED.listForAi(sc)}\n
-요청에 맞는 일정 하나를 골라 실무자가 바로 쓸 수 있는 상세 계획을 HTML 조각으로 쓰세요.
-JSON 하나만 출력: {"id":"일정 id","html":"<h4>목표</h4><p>…</p><h4>할 일</h4><table>…날짜·할 일·담당…</table><h4>준비물</h4><ul>…</ul><h4>확인할 것</h4><ul>…</ul>"}
-- 쓸 수 있는 태그: h4 p ul ol li b table thead tbody tr th td mark. 일정 기간 안의 날짜로 나누세요.
-- 일정·기업 정보에 없는 사실(업체명·금액·연락처)은 지어내지 말고 <mark>[확인 필요: 무엇]</mark>으로 남기세요.`;
+    if (!live.length) return { free: true, text: `아직 ${W.it}이 없어요. 먼저 ${W.it}을 올려 주세요.` };
+    const system = `${bot.role}\n${todayLine()}\n\n[우리 기업]\n${orgContext(org)}\n\n[현재 ${W.it}]\n${SCHED.listForAi(sc)}\n
+요청에 맞는 ${W.it} 하나를 골라 실무자가 바로 쓸 수 있는 상세 계획을 HTML 조각으로 쓰세요.
+JSON 하나만 출력: {"id":"${W.it} id","html":"<h4>목표</h4><p>…</p><h4>할 일</h4><table>…날짜·할 일·담당…</table><h4>준비물</h4><ul>…</ul><h4>확인할 것</h4><ul>…</ul>"}
+- 쓸 수 있는 태그: h4 p ul ol li b table thead tbody tr th td mark. ${W.it} 기간 안의 날짜로 나누세요.
+- ${W.it}·기업 정보에 없는 사실(업체명·금액·연락처)은 지어내지 말고 <mark>[확인 필요: 무엇]</mark>으로 남기세요.`;
     const r = await callClaude(system, text, 3000);
     if (r.error) return { error: r.error };
     const j = parseJson(r.text) || {}, it = sc.items.find(x => x.id === j.id);
     const html = DOC.sanitizeHtml(j.html || '');
-    if (!it || !html) return { error: '어느 일정의 상세 계획인지 정하지 못했어요. 일정 제목을 넣어 다시 요청해 주세요.' };
+    if (!it || !html) return { error: `어느 ${W.it}의 상세 계획인지 정하지 못했어요. 제목을 넣어 다시 요청해 주세요.` };
     it.detail = html;
     sc.v++; sc.updatedAt = Date.now();
     sc.log.unshift({ at: Date.now(), by: who, source, v: sc.v, changes: [`상세 계획 작성: "${it.title}"`] });
     it.history.push({ at: Date.now(), by: who, source, op: 'detail', summary: '상세 계획 작성' });
-    save(); emit('sched', {}, org.id);
-    return { text: `"${it.title}" (${SCHED.range(it)}) 상세 계획을 일정표에 넣었어요 (버전 ${sc.v}).\n일정표: ${url}#d-${it.id}${linkNote}`, sched: { v: sc.v, url: `${url}#d-${it.id}` } };
+    save(); emit(W.ev, {}, org.id);
+    return { text: `"${it.title}" (${SCHED.range(it)}) 상세 계획을 ${W.box}에 넣었어요 (버전 ${sc.v}).\n${W.box}: ${url}#d-${it.id}${linkNote}`, ...card(`${url}#d-${it.id}`) };
   }
   // 상부 보고용 PPT: 간트 슬라이드는 데이터로 직접 그리고, 나머지 보고 슬라이드는 봇이 씀
   const items = sc.items.slice().sort((a, b) => a.start.localeCompare(b.start));
-  if (!items.length) return { free: true, text: '아직 일정이 없어요. 먼저 일정을 올려 주세요.' };
+  if (!items.length) return { free: true, text: `아직 ${W.it}이 없어요. 먼저 ${W.it}을 올려 주세요.` };
   const cnt = { active: items.filter(x => x.status === 'active').length, done: items.filter(x => x.status === 'done').length, cancelled: items.filter(x => x.status === 'cancelled').length };
   const changes = sc.log.slice(0, 15).map(l => `${new Date(l.at + 9 * 36e5).toISOString().slice(5, 10)} ${l.by}: ${l.changes.join('; ')}`).join('\n');
-  const system = `${bot.role}\n${todayLine()}\n\n[우리 기업]\n${orgContext(org)}\n\n[일정 현황] 진행 ${cnt.active} · 완료 ${cnt.done} · 취소 ${cnt.cancelled}\n${SCHED.listForAi(sc)}\n\n[최근 변경]\n${changes || '(없음)'}\n${DECK_SPEC.replace('[PPT 만들기]', '[보고 PPT 만들기]')}
-- 상부 보고용입니다. 구성: 표지(title) → 현황 숫자(stats: 진행·완료·취소 — 위 숫자 그대로) → 주요 일정(table: 일정·기간·담당·상태, 최대 6줄) → 최근 변경·연기 사유(bullets) → 위험·도움이 필요한 점(bullets) → 다음 단계(closing). 간트차트 장은 서버가 따로 넣으니 만들지 마세요. stats·table 종류도 쓸 수 있어요: stats {title, stats:[{value,label}]}, table {title, columns, rows}.`;
+  const lastRv = T && sc.reviews[0] ? `\n\n[최근 ${sc.cycle.days}일 점검 ${sc.reviews[0].from}~${sc.reviews[0].to}]\n${sc.reviews[0].people.map(p => `${p.owner}: ${TODO.statLine(p)}${p.concern ? ' / 살펴볼 점: ' + p.concern : ''}`).join('\n')}` : '';
+  const system = `${bot.role}\n${todayLine()}\n\n[우리 기업]\n${orgContext(org)}\n\n[${W.it} 현황] 진행 ${cnt.active} · 완료 ${cnt.done} · 취소 ${cnt.cancelled}\n${SCHED.listForAi(sc)}\n\n[최근 변경]\n${changes || '(없음)'}${lastRv}\n${DECK_SPEC.replace('[PPT 만들기]', '[보고 PPT 만들기]')}
+- 상부 보고용입니다. 구성: 표지(title) → 현황 숫자(stats: 진행·완료·취소 — 위 숫자 그대로) → 주요 ${W.it}(table: ${W.it}·기간·담당·상태, 최대 6줄) → 최근 변경·연기 사유(bullets) → 위험·도움이 필요한 점(bullets) → 다음 단계(closing). 간트차트 장은 서버가 따로 넣으니 만들지 마세요. stats·table 종류도 쓸 수 있어요: stats {title, stats:[{value,label}]}, table {title, columns, rows}.`;
   const r = await callClaude(system, text, 5000);
   if (r.error) return { error: r.error };
   const n = DECK.normalizeOutline(r.text);
   if (n.error) return { error: `보고 PPT를 만들지 못했어요 (${n.error}). 다시 요청해 주세요.` };
   const ganttSlides = [];
-  for (let i = 0; i < items.length; i += 10) ganttSlides.push({ kind: 'gantt', title: items.length > 10 ? `일정 간트차트 (${i / 10 + 1})` : '일정 간트차트', items: items.slice(i, i + 10).map(x => ({ label: x.title, start: x.start, end: x.end, status: x.status, owner: x.owner })), today: SCHED.kstDate(), note: '간트차트는 일정표 데이터로 그렸습니다.' });
+  for (let i = 0; i < items.length; i += 10) ganttSlides.push({ kind: 'gantt', title: items.length > 10 ? `${W.it} 간트차트 (${i / 10 + 1})` : `${W.it} 간트차트`, items: items.slice(i, i + 10).map(x => ({ label: x.title, start: x.start, end: x.end, status: x.status, owner: x.owner })), today: SCHED.kstDate(), note: `간트차트는 ${W.box} 데이터로 그렸습니다.` });
   n.outline.slides.splice(1, 0, ...ganttSlides);
   try { await DECK.buildDeck(n.outline, org.name); } catch (e) { console.error(e); return { error: '보고 PPT 파일을 만들지 못했어요.' }; }
   org.decks = org.decks || [];
   const prev = org.decks[org.decks.length - 1];
-  const d = { id: newId('k'), n: (prev ? prev.n : 0) + 1, at: Date.now(), title: n.outline.title, request: str(text, 200), outline: n.outline, docN: docCurrent(org).n, kind: 'sched' };
+  const d = { id: newId('k'), n: (prev ? prev.n : 0) + 1, at: Date.now(), title: n.outline.title, request: str(text, 200), outline: n.outline, docN: docCurrent(org).n, kind };
   org.decks.push(d); if (org.decks.length > 20) org.decks.splice(0, org.decks.length - 20); save();
-  return { text: `상부 보고용 일정 PPT "${d.title}" ${n.outline.slides.length}장을 만들었어요 (일정표 버전 ${sc.v} 기준, 간트차트 ${ganttSlides.length}장 포함).`, deck: { id: d.id, n: d.n, title: d.title, count: n.outline.slides.length }, tgText: `보고 PPT "${d.title}"를 만들었어요. 파일을 함께 보내요.` };
+  return { text: `상부 보고용 ${W.it} PPT "${d.title}" ${n.outline.slides.length}장을 만들었어요 (${W.box} 버전 ${sc.v} 기준, 간트차트 ${ganttSlides.length}장 포함).`, deck: { id: d.id, n: d.n, title: d.title, count: n.outline.slides.length }, tgText: `보고 PPT "${d.title}"를 만들었어요. 파일을 함께 보내요.` };
 }
+
+// ---------- 할 일 봇 ----------
+// org.todo = 일정 봇과 같은 items·log·v + { token(보기), editToken(고치기), cycle:{start,days,hour,weekdays}, reviews:[], lastMorning, lastReview }
+const nowMs = () => +process.env.HB_NOW || Date.now(); // 시험에서 시각을 바꿀 수 있게
+const todayKst = () => SCHED.kstDate(nowMs());
+const ensureTodo = org => org.todo || (org.todo = { items: [], log: [], v: 0, token: crypto.randomBytes(12).toString('hex'), editToken: crypto.randomBytes(16).toString('hex'), updatedAt: null, cycle: TODO.defaultCycle(todayKst()), reviews: [], lastMorning: null, lastReview: null });
+const baseUrl = () => PUBLIC_URL ? PUBLIC_URL.replace(/\/$/, '') : '';
+const todoUrl = org => `${baseUrl()}/t/${ensureTodo(org).token}`;
+const todoEditUrl = org => `${baseUrl()}/te/${ensureTodo(org).editToken}`;
+const REVIEW_RE = /(점검|피드백|리뷰|검사)\s*(해|좀|받|부탁|시작|돌려|줘)|^\s*(지금\s*)?(\d+\s*주\s*)?(할\s*일\s*)?(점검|피드백|리뷰|검사)\s*$/;
+function todoMode(text) {
+  if (/링크|보여|어디|주소/.test(text) && !/편집|고치는|수정|추가|연기|미뤄|당겨|취소|완료|바꿔|변경|까지/.test(text)) return 'link';
+  if (REVIEW_RE.test(text) && !/추가|연기|미뤄|당겨|취소|완료|마감|까지/.test(text)) return 'review';
+  if (/편집|고치는|수정/.test(text) && /링크|주소|페이지/.test(text)) return 'edit';
+  if (PPT_RE.test(text) || /상부\s*보고|보고\s*용/.test(text)) return 'ppt';
+  if (/상세|자세|세부|계획서|체크\s*리스트|준비물/.test(text) && !/까지|마감/.test(text)) return 'detail';
+  return 'change';
+}
+async function runTodoReview(bot, room, org, text, ctx) {
+  const td = ensureTodo(org), today = todayKst(), days = td.cycle.days;
+  const from = addDaysK(today, -days), url = todoUrl(org);
+  const stats = TODO.reviewStats(td, from, today);
+  if (!stats.length) return { free: true, text: `점검할 할 일이 없어요 (${SCHED.md(from)}–${SCHED.md(today)}). 텔레그램에서 "/todo 금요일까지 구청 보고서"처럼 올려 주세요.` };
+  const system = `${bot.role}\n${todayLine()}\n\n[점검 기간] ${from} ~ ${today} (${days}일)\n[사람별 할 일과 숫자 — 숫자는 서버가 계산한 것]\n${TODO.forAi(stats, today)}\n
+사람별로 짧은 피드백을 쓰세요. JSON 하나만 출력: {"summary":"팀 전체 한두 문장","people":[{"owner":"위 이름 그대로","good":"잘한 점 한 문장","concern":"살펴볼 점 한 문장(마감 지남·잦은 연기·마감 없는 큰 일 등)","next":"다음 ${days}일 제안 한 문장"}]}
+- 위 목록에 있는 사실만 쓰세요. 숫자를 새로 만들거나 바꾸지 마세요. 사람을 탓하는 말 대신 도울 방법을 쓰세요.
+- 해당하는 내용이 없으면 그 칸은 빈 문자열로 두세요.`;
+  const r = await callClaude(system, text, 2500);
+  if (r.error) return { error: r.error };
+  const j = parseJson(r.text) || {};
+  const fb = new Map((Array.isArray(j.people) ? j.people : []).map(p => [String(p && p.owner || ''), p]));
+  const people = stats.map(p => { const f = fb.get(p.owner) || {}; return { owner: p.owner, done: p.done, added: p.added, postponed: p.postponed, active: p.active, overdue: p.overdue, good: str(f.good, 200), concern: str(f.concern, 200), next: str(f.next, 200) }; });
+  const rv = { id: newId('r'), at: Date.now(), from, to: today, days, next: TODO.nextReview(td.cycle, addDaysK(today, 1)), auto: !!ctx.auto, by: ctx.author || '기업방', summary: str(j.summary, 300), people };
+  td.reviews.unshift(rv); td.reviews = td.reviews.slice(0, 30);
+  td.lastReview = today; td.v++; td.updatedAt = Date.now();
+  td.log.unshift({ at: Date.now(), by: rv.by, source: ctx.auto ? 'auto' : (ctx.source || 'web'), v: td.v, changes: [`${days}일 점검 (${SCHED.md(from)}–${SCHED.md(today)})`] });
+  save(); emit('todo', {}, org.id);
+  return { text: TODO.reviewText(rv, url), todo: { v: td.v, url: `${url}#rv` } };
+}
+const addDaysK = (d, n) => SCHED.addDays(d, n);
+// 매분: 정한 시각이 지나면 하루 한 번 아침 알림, 점검일이면 점검 먼저
+const todoRooms = org => S.rooms.filter(r => r.orgId === org.id && r.bots.includes('todo'));
+async function todoTick() {
+  const now = nowMs(), today = SCHED.kstDate(now), hour = new Date(now + 9 * 36e5).getUTCHours(), wdN = new Date(now + 9 * 36e5).getUTCDay();
+  for (const org of S.orgs) {
+    const td = org.todo, rooms = td ? todoRooms(org) : [];
+    if (!td || !rooms.length || !td.items.length || hour < td.cycle.hour || td.lastMorning === today) continue;
+    td.lastMorning = today; save();
+    const reviewDay = TODO.nextReview(td.cycle, today) === today;
+    if (td.cycle.weekdays && (wdN === 0 || wdN === 6) && !reviewDay) continue;
+    const bot = botById('todo'), text = TODO.morningText(td, today, todoUrl(org));
+    for (const room of rooms) { addMsg(room, { from: 'todo', text, todo: { v: td.v, url: todoUrl(org) } }); if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${text}`); }
+    if (reviewDay && td.lastReview !== today) await runBot(rooms[0], 'todo', `${td.cycle.days}일 점검`, { auto: true, author: '할 일 봇 (자동)', source: 'auto' });
+  }
+}
+setInterval(() => todoTick().catch(e => console.error(e)), +process.env.TODO_TICK_MS || 60000).unref();
 
 // ---------- IR 봇 ----------
 // org.ir = { versions:[{id,n,at,outline,note,request}], comments:[{id,versionN,slide,slideTitle,text,by,at,status,reply}], final:{id,n,at}|null, reviewers:[expertId], vcs:[{at,request,items,dropped,note}] }
@@ -1121,11 +1190,14 @@ async function handleTelegram(msg) {
   addMsg(room, { from: 'tg', name, text });
   forwardToExperts(room, `${name}: ${text}`);
   // 일정 봇이 있는 방: 일정 이야기로 보이는 메시지는 명령 없이도 알아서 반영 (아니면 조용히 넘어감)
+  // 할 일 봇이 있는 방: 할 일로 보이는 말은 보낸 사람의 할 일로 반영 (일정 봇도 있으면 "할 일·todo"라고 쓴 것만)
+  const todoWord = /할\s*일|할일|todo|투두/i.test(text);
+  if (!botId && room.bots.includes('todo') && TODO.TODO_RE.test(text) && (todoWord || !room.bots.includes('sched'))) return runBot(room, 'todo', text, { author: name, source: 'telegram', silent: true });
   if (!botId && room.bots.includes('sched') && SCHED.SCHED_RE.test(text)) return runBot(room, 'sched', text, { author: name, source: 'telegram', silent: true });
-  if (botId === 'sched') return runBot(room, 'sched', ask || '일정표 링크 보여 줘', { author: name, source: 'telegram' });
   if (botId) {
     if (!room.bots.includes(botId)) { room.bots.push(botId); addMsg(room, { from: 'sys', text: `${botById(botId).name}이(가) 텔레그램에서 호출돼 방에 들어왔어요` }); }
-    runBot(room, botId, ask || '자기소개를 해 주세요');
+    const kind = botById(botId).kind;
+    runBot(room, botId, ask || (kind === 'sched' ? '일정표 링크 보여 줘' : kind === 'todo' ? '할 일표 링크 보여 줘' : '자기소개를 해 주세요'), { author: name, source: 'telegram' });
   }
 }
 
@@ -1164,7 +1236,7 @@ const publicBots = org => [
   ...BOTS.map(({ role, ...b }) => ({ ...b, cost: b.soon ? null : costOf(b.id) })),
   ...(org ? S.customBots.filter(c => canUseBot(org, c.id)).map(c => {
     const o = customBotObj(c), mine = c.orgId === org.id, pass = (c.passes || {})[org.id];
-    const base = o.kind === 'site' ? costOf('site') : o.kind === 'ir' ? costOf('ir') : o.kind === 'sched' ? costOf('sched') : costOf('custom');
+    const base = o.kind === 'site' ? costOf('site') : o.kind === 'ir' ? costOf('ir') : o.kind === 'sched' ? costOf('sched') : o.kind === 'todo' ? costOf('todo') : costOf('custom');
     return { id: c.id, name: o.name, short: o.short, color: o.color, tag: o.tag, desc: o.desc, hello: o.hello, quick: o.quick, kind: o.kind, ppt: o.ppt, custom: true, mine, ownerName: (orgById(c.orgId) || {}).name, cost: base + (mine || (pass && pass > Date.now()) ? 0 : (c.pricing || {}).perUse || 0), pricing: mine ? c.pricing || {} : { perUse: (c.pricing || {}).perUse, passDays: (c.pricing || {}).passDays, passPrice: (c.pricing || {}).passPrice }, passUntil: pass && pass > Date.now() ? pass : null };
   }) : [])
 ];
@@ -1388,7 +1460,8 @@ async function userApi(req, res, p, sess) {
       telegram: { enabled: !!tgUsername, username: tgUsername }, ai: !!ANTHROPIC_API_KEY,
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
-      sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null
+      sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null,
+      todo: org.todo || todoRooms(org).length ? (() => { const td = ensureTodo(org), t = todayKst(), nx = TODO.upcoming(td, t); return { url: todoUrl(org), editUrl: todoEditUrl(org), v: td.v, next: nx, left: SCHED.diffDays(t, nx), days: td.cycle.days, count: td.items.filter(x => x.status === 'active').length }; })() : null
     });
   // ----- 봇 마켓 (직접 만든 봇) -----
   if (p.startsWith('/api/bots')) {
@@ -1471,6 +1544,7 @@ async function userApi(req, res, p, sess) {
 
   // ----- 일정표 -----
   if (p === '/api/sched' && req.method === 'GET') { const sc = ensureSched(org); return json(res, 200, { url: schedUrl(org), v: sc.v, items: sc.items, log: sc.log.slice(0, 30) }); }
+  if (p === '/api/todo/token' && req.method === 'POST') { const td = ensureTodo(org); td.token = crypto.randomBytes(12).toString('hex'); td.editToken = crypto.randomBytes(16).toString('hex'); save(); emit('todo', {}, org.id); return json(res, 200, { url: todoUrl(org), editUrl: todoEditUrl(org) }); }
   if (p === '/api/sched/token' && req.method === 'POST') { const sc = ensureSched(org); sc.token = crypto.randomBytes(12).toString('hex'); save(); emit('sched', {}, org.id); return json(res, 200, { url: schedUrl(org) }); }
 
   // ----- IR 자료 -----
@@ -1765,6 +1839,37 @@ async function userApi(req, res, p, sess) {
   }
 }
 
+// ---------- 할 일표 편집 링크 API (로그인 없이 편집 토큰으로) ----------
+async function todoEditApi(req, res, p) {
+  const m = p.match(/^\/api\/te\/([a-f0-9]{32})$/);
+  const org = m && S.orgs.find(o => o.todo && o.todo.editToken === m[1]);
+  if (!org) return BAD(res, '없는 편집 링크이거나 링크가 바뀌었어요', 404);
+  const td = org.todo, today = todayKst();
+  const view = () => ({ org: org.name, v: td.v, items: td.items, cycle: td.cycle, today, next: TODO.upcoming(td, today), viewUrl: todoUrl(org), log: td.log.slice(0, 20) });
+  if (req.method === 'GET') return json(res, 200, view());
+  if (req.method !== 'POST') return BAD(res, '잘못된 요청', 405);
+  if (!/^application\/json/.test(req.headers['content-type'] || '')) return BAD(res, '잘못된 요청', 415);
+  const b = await body(req), who = str(b.name, 30) || '편집 링크';
+  if (b.v != null && +b.v !== td.v) return json(res, 409, { error: '다른 사람이 먼저 고쳤어요. 새로 불러온 내용을 확인하고 다시 고쳐 주세요.', ...view() });
+  if (b.cycle) {
+    const c = b.cycle, days = +c.days, hour = +c.hour;
+    if (!SCHED.isDate(c.start) || ![7, 14, 21, 28].includes(days) || !(hour >= 6 && hour <= 12)) return BAD(res, '점검 주기는 시작일·7/14/21/28일·알림 6~12시로 정해 주세요');
+    const old = td.cycle;
+    td.cycle = { start: c.start, days, hour, weekdays: !!c.weekdays };
+    td.v++; td.updatedAt = Date.now();
+    td.log.unshift({ at: Date.now(), by: who, source: 'edit', v: td.v, changes: [`점검 주기: ${old.days}일·${old.hour}시 → ${days}일·${hour}시${td.cycle.weekdays ? ' (평일 알림)' : ''}, 시작 ${c.start}`] });
+    save(); emit('todo', {}, org.id);
+    return json(res, 200, view());
+  }
+  const ops = (Array.isArray(b.ops) ? b.ops : []).slice(0, 20).filter(o => o && ['add', 'update', 'cancel', 'done', 'restore', 'delete'].includes(o.op));
+  if (!ops.length) return BAD(res, '고칠 내용이 없어요');
+  const r = SCHED.applyOps(td, ops, who, 'edit', { allowDelete: true, exact: true });
+  if (!r.applied.length) return BAD(res, r.errors.join(' / ') || '고치지 못했어요');
+  save(); emit('todo', {}, org.id);
+  for (const room of todoRooms(org)) addMsg(room, { from: 'sys', text: `${who}님이 할 일표 편집 링크에서 고쳤어요 (버전 ${td.v})\n${r.applied.map(a => '· ' + a.summary).join('\n')}` });
+  return json(res, 200, { ...view(), errors: r.errors });
+}
+
 // ---------- HTTP 서버 ----------
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x'), p = url.pathname;
@@ -1786,6 +1891,7 @@ http.createServer(async (req, res) => {
       const ping = setInterval(() => res.write(': ping\n\n'), 25000);
       return req.on('close', () => { clearInterval(ping); clients.delete(res); });
     }
+    if (p.startsWith('/api/te/')) return await todoEditApi(req, res, p);
     if (p.startsWith('/api/admin/')) return await adminApi(req, res, p, sess);
     if (p.startsWith('/api/expert/')) return await expertApi(req, res, p, sess);
     if (p.startsWith('/api/')) return await userApi(req, res, p, sess);
@@ -1798,6 +1904,18 @@ http.createServer(async (req, res) => {
     if (!org) { res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' }); return res.end('<!DOCTYPE html><meta charset="utf-8"><title>없는 일정표</title><p style="font-family:sans-serif;padding:40px">없는 일정표이거나 링크가 바뀌었어요.</p>'); }
     res.writeHead(200, { ...SITE_HEADERS, 'cache-control': 'no-store', 'x-robots-tag': 'noindex' });
     return res.end(SCHED.renderGantt(org, org.sched));
+  }
+  // 할 일표 (보기 링크) · 할 일표 고치기 (편집 링크)
+  const tm = p.match(/^\/t\/([a-f0-9]{24})\/?$/);
+  if (tm) {
+    const org = S.orgs.find(o => o.todo && o.todo.token === tm[1]);
+    if (!org) { res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' }); return res.end('<!DOCTYPE html><meta charset="utf-8"><title>없는 할 일표</title><p style="font-family:sans-serif;padding:40px">없는 할 일표이거나 링크가 바뀌었어요.</p>'); }
+    res.writeHead(200, { ...SITE_HEADERS, 'cache-control': 'no-store', 'x-robots-tag': 'noindex' });
+    return res.end(TODO.renderTodo(org, org.todo, todayKst()));
+  }
+  if (/^\/te\/[a-f0-9]{32}\/?$/.test(p)) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store', 'x-robots-tag': 'noindex', 'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" });
+    return res.end(fs.readFileSync(path.join(__dirname, 'public', 'todo-edit.html')));
   }
   // 게시된 랜딩페이지 (로그인 없이 누구나)
   const sm = p.match(/^\/s\/([a-z0-9-]{3,40})\/?$/);
