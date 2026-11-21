@@ -68,7 +68,7 @@ if (!S.expertGroups) S.expertGroups = {};
 if (!S.botCosts) S.botCosts = {};
 if (!S.customBots) S.customBots = [];   // 봇 마켓: 기업이 직접 만든 봇           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
 // 요청당 토큰: 관리자 설정 > bots.js 기본값. 'summary'는 함께봇 문서 정리
-const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).flatMap(b => [{ id: b.id, name: b.name, def: b.cost || 0 }, ...(b.extraCosts || [])]), { id: 'summary', name: '함께봇 문서 정리', def: 1 }, { id: 'custom', name: '직접 만든 봇 (글 답변)', def: 1 }, { id: 'custom_ppt', name: '직접 만든 봇 PPT', def: 3 }];
+const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).flatMap(b => [{ id: b.id, name: b.name, def: b.cost || 0 }, ...(b.extraCosts || [])]), { id: 'summary', name: '함께봇 문서 정리', def: 1 }, { id: 'custom', name: '직접 만든 봇 (글 답변)', def: 1 }, { id: 'custom_ppt', name: '직접 만든 봇 PPT', def: 3 }, { id: 'royalty', name: '복사한 봇의 원작 기업 몫 (원작이 요청당 가격을 안 정했을 때, 요청당)', def: 1 }];
 const PPT_RE = /ppt|피피티|파워\s*포인트|발표\s*자료|슬라이드|프레젠테이션|소개\s*자료|덱/i;
 const costOf = id => { const v = S.botCosts[id]; if (Number.isInteger(v)) return v; const it = COST_ITEMS().find(x => x.id === id); return it ? it.def : 0; };
 // 토큰 미리 잡기 → 성공하면 기록, 실패하면 돌려줌 (동시에 여러 요청이 와도 잔액을 넘지 않게)
@@ -274,14 +274,53 @@ async function askClaude(bot, room, text) {
   return { text: r.text + (r.cut ? '\n\n(답변이 길어 중간에 끊겼어요. "이어서"라고 보내 주세요.)' : '') };
 }
 // 다른 기업이 만든 봇의 몫을 만든 기업에 보냄 (토큰은 이미 이용 기업 잔액에서 잡아 둔 상태)
-function payShare(fromOrg, c, amount, type, room) {
-  const owner = orgById(c.orgId); if (!owner || amount <= 0) return;
-  const name = c.def ? c.def.name : '봇';
-  record(fromOrg, { type, amount, botId: c.id, botName: name, toOrgName: owner.name, roomId: room && room.id, roomName: room && room.name });
+// to가 있으면 복사한 봇: 몫은 원작 기업(to.orgId)으로 감
+function payShare(fromOrg, c, amount, type, room, to = null) {
+  const owner = orgById(to ? to.orgId : c.orgId); if (!owner || amount <= 0) return;
+  const name = c.def ? c.def.name : '봇', extra = to ? { originName: to.name || '' } : {};
+  record(fromOrg, { type, amount, botId: c.id, botName: name, toOrgName: owner.name, roomId: room && room.id, roomName: room && room.name, ...extra });
   afterSpend(fromOrg);
   owner.wallet += amount;
-  record(owner, { type: type + '_in', amount, botId: c.id, botName: name, fromOrgName: fromOrg.name });
-  c.stats = c.stats || { uses: 0, earned: 0, byOrg: {} }; c.stats.earned += amount; save();
+  record(owner, { type: type + '_in', amount, botId: c.id, botName: name, fromOrgName: fromOrg.name, ...extra });
+  const st = to ? to.rec : c;
+  if (st) { st.stats = st.stats || { uses: 0, earned: 0, byOrg: {} }; st.stats.earned += amount; }
+  save();
+}
+// ---------- 무단 복사 찾기 · 원작 기업에 몫 보내기 ----------
+// 기본 봇·공통 규칙·Claude 안내문에 있는 글은 누구나 쓸 수 있으므로 비교에서 뺌
+let COPY_IGNORE = null;
+const copyIgnore = () => COPY_IGNORE || (COPY_IGNORE = MARKET.grams([...BOTS.map(b => b.role || ''), COMMON_RULES, MARKET.CLAUDE_PROMPT].join('\n')));
+// 이 기업이 올린 역할 지시문이 다른 기업이 먼저 만든 봇을 복사한 것인지 (가장 많이 겹치는 원작, 복사의 복사는 맨 처음 원작으로)
+function findOrigin(org, role, self) {
+  if (self && self.noAutoOrigin) return null; // 운영 기관이 복사가 아니라고 확인한 봇
+  const before = self && self.createdAt ? self.createdAt : Date.now();
+  // 겹치는 봇 중 가장 먼저 만든 봇이 원작 (원작을 베낀 글이면 원작이 더 먼저라 원작이 고름)
+  const cands = S.customBots.filter(c => c !== self && c.orgId !== org.id && c.createdAt < before).sort((x, y) => x.createdAt - y.createdAt);
+  for (const c of cands) {
+    if (c.derivedFrom && rootOf(c).orgId === org.id) continue; // 우리 것을 베낀 봇과 겹치는 것은 우리 글
+    const roles = [...new Set([...(c.versions || []).map(v => v.def.role), c.def && c.def.role].filter(Boolean))];
+    const score = Math.max(0, ...roles.map(r => MARKET.overlap(role, r, copyIgnore()).score));
+    if (!score) continue;
+    const oorg = orgById(c.orgId); if (!oorg) continue;
+    return { botId: c.id, orgId: c.orgId, name: c.def ? c.def.name : '', orgName: oorg.name, score };
+  }
+  return null;
+}
+function rootOf(c) { let cur = c; for (let i = 0; i < 5 && cur.derivedFrom; i++) { const nx = S.customBots.find(x => x.id === cur.derivedFrom.botId); if (!nx) break; cur = nx; } return cur; }
+const originOf = c => { if (!c.derivedFrom) return null; const rec = S.customBots.find(x => x.id === c.derivedFrom.botId); return { orgId: rec ? rec.orgId : c.derivedFrom.orgId, rec, name: rec && rec.def ? rec.def.name : c.derivedFrom.name }; };
+const royaltyOf = o => { const pr = o.rec && o.rec.pricing; return pr && pr.perUse != null ? pr.perUse : costOf('royalty'); };
+// 직접 만든 봇을 이 기업이 쓸 때 보낼 몫: 다른 기업 봇이면 만든 기업에, 복사한 봇이면 원작 기업에 (원작 요청당 가격, 없으면 관리자가 정한 기본 몫)
+function shareFor(org, c) {
+  const now = Date.now(), foreign = c.orgId !== org.id, pr = c.pricing || {}, pass = ((c.passes || {})[org.id] || 0) > now;
+  let amount = 0, block = null;
+  if (foreign && !pass) { if (pr.perUse == null && pr.passPrice != null) block = `${c.def.name}은(는) 기간 이용권으로만 쓸 수 있어요 (${pr.passDays}일 ${pr.passPrice}토큰). "전문가 초대" 목록에서 이용권을 사 주세요.`; else amount = pr.perUse || 0; }
+  const o = originOf(c);
+  if (o && orgById(o.orgId)) {
+    if (o.orgId === org.id) return { amount: 0, block }; // 원작 기업은 자기 것을 쓰는 셈
+    const origPass = o.rec && ((o.rec.passes || {})[org.id] || 0) > now;
+    return { amount: Math.max(amount, pass || origPass ? 0 : royaltyOf(o)), type: 'royalty', origin: o, block };
+  }
+  return { amount, type: 'share', block };
 }
 // 봇 실행: 토큰을 먼저 잡고 → 답을 받으면 사용 기록, 실패하면 돌려줌
 async function runBot(room, botId, text, ctx = {}) {
@@ -300,19 +339,13 @@ async function runBot(room, botId, text, ctx = {}) {
   else run = () => askClaude(bot, room, text);
   const cost = costOf(costId), costName = bot.custom ? bot.name : (COST_ITEMS().find(c => c.id === costId) || {}).name || bot.name;
   // 다른 기업이 만든 봇: 요청당 몫을 만든 기업에 보냄 (기간 이용권이 있으면 없음, 이용권 전용이면 이용권 필요)
-  let share = 0; const cb = bot.custom && bot.ownerOrgId !== org.id ? S.customBots.find(x => x.id === bot.id) : null;
-  if (cb) {
-    const pr = cb.pricing || {}, pass = (cb.passes || {})[org.id];
-    const hasPass = pass && pass > Date.now();
-    if (!hasPass) {
-      if (pr.perUse == null && pr.passPrice != null) { addMsg(room, { from: 'sys', text: `${bot.name}은(는) 기간 이용권으로만 쓸 수 있어요 (${pr.passDays}일 ${pr.passPrice}토큰). "전문가 초대" 목록에서 이용권을 사 주세요.` }); return; }
-      share = pr.perUse || 0;
-    }
-  }
+  const cb = bot.custom ? S.customBots.find(x => x.id === bot.id) : null, sh = cb ? shareFor(org, cb) : { amount: 0 };
+  if (sh.block) { addMsg(room, { from: 'sys', text: sh.block }); return; }
+  const share = sh.amount, shareLabel = sh.type === 'royalty' ? '원작 기업 몫' : '만든 기업 몫';
   const say = (t, extra = {}) => { addMsg(room, { from: bot.id, text: t, ...extra }); if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${extra.tgText || t}`); };
   if (!ANTHROPIC_API_KEY) return say('서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.');
   if (!reserveTokens(org, cost + share)) {
-    addMsg(room, { from: 'sys', text: `${costName}은(는) 요청당 ${cost + share}토큰을 써요${share ? ` (만든 기업 몫 ${share} 포함)` : ''}. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
+    addMsg(room, { from: 'sys', text: `${costName}은(는) 요청당 ${cost + share}토큰을 써요${share ? ` (${shareLabel} ${share} 포함)` : ''}. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
     if (room.tgChatId) tgSend(room.tgChatId, `${bot.name}: 토큰 잔액이 부족해요 (필요 ${cost + share}, 잔액 ${org.wallet}).`);
     return;
   }
@@ -323,7 +356,7 @@ async function runBot(room, botId, text, ctx = {}) {
   if (r.free) { refundTokens(org, cost + share); return say(r.text, { ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}) }); } // 질문·링크 안내는 무료
   chargeRecord(org, cost, { botId: costId, botName: costName, roomId: room.id, roomName: room.name });
   if (bot.custom) { const c = S.customBots.find(x => x.id === bot.id); if (c) { c.stats = c.stats || { uses: 0, earned: 0, byOrg: {} }; c.stats.uses++; c.stats.byOrg[org.id] = (c.stats.byOrg[org.id] || 0) + 1; } }
-  if (share) payShare(org, cb, share, 'share', room);
+  if (share) payShare(org, cb, share, sh.type, room, sh.type === 'royalty' ? sh.origin : null);
   say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}) });
   if (r.after) r.after();
   if (r.deck && room.tgChatId) { const d = deckById(org, r.deck.id); if (d) tgSendDoc(room.tgChatId, deckFileName(org, d), await DECK.buildDeck(d.outline, org.name), `${d.title} (PPT v${d.n})`, PPTX_MIME); }
@@ -1237,7 +1270,7 @@ const publicBots = org => [
   ...(org ? S.customBots.filter(c => canUseBot(org, c.id)).map(c => {
     const o = customBotObj(c), mine = c.orgId === org.id, pass = (c.passes || {})[org.id];
     const base = o.kind === 'site' ? costOf('site') : o.kind === 'ir' ? costOf('ir') : o.kind === 'sched' ? costOf('sched') : o.kind === 'todo' ? costOf('todo') : costOf('custom');
-    return { id: c.id, name: o.name, short: o.short, color: o.color, tag: o.tag, desc: o.desc, hello: o.hello, quick: o.quick, kind: o.kind, ppt: o.ppt, custom: true, mine, ownerName: (orgById(c.orgId) || {}).name, cost: base + (mine || (pass && pass > Date.now()) ? 0 : (c.pricing || {}).perUse || 0), pricing: mine ? c.pricing || {} : { perUse: (c.pricing || {}).perUse, passDays: (c.pricing || {}).passDays, passPrice: (c.pricing || {}).passPrice }, passUntil: pass && pass > Date.now() ? pass : null };
+    return { id: c.id, name: o.name, short: o.short, color: o.color, tag: o.tag, desc: o.desc, hello: o.hello, quick: o.quick, kind: o.kind, ppt: o.ppt, custom: true, mine, ownerName: (orgById(c.orgId) || {}).name, cost: base + shareFor(org, c).amount, origin: c.derivedFrom ? (o2 => o2 ? { orgName: (orgById(o2.orgId) || {}).name, name: o2.rec && o2.rec.publicStatus === 'public' ? o2.name : '', royalty: o2.orgId === org.id ? 0 : royaltyOf(o2) } : null)(originOf(c)) : null, pricing: mine ? c.pricing || {} : { perUse: (c.pricing || {}).perUse, passDays: (c.pricing || {}).passDays, passPrice: (c.pricing || {}).passPrice }, passUntil: pass && pass > Date.now() ? pass : null };
   }) : [])
 ];
 const publicExperts = () => S.experts.filter(e => e.tgChatId && e.rate).map(e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, color: e.color, linked: true }));
@@ -1264,6 +1297,8 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
+    copies: S.customBots.filter(c => c.derivedFrom).map(c => { const o = originOf(c); return { id: c.id, name: c.def ? c.def.name : '', orgName: (orgById(c.orgId) || {}).name, origin: { id: c.derivedFrom.botId, name: o ? o.name : '', orgName: (orgById(o ? o.orgId : c.derivedFrom.orgId) || {}).name }, score: c.derivedFrom.score, manual: !!c.derivedFrom.manual, royalty: o ? royaltyOf(o) : 0 }; }),
+    allBots: S.customBots.filter(c => c.def).map(c => ({ id: c.id, name: c.def.name, orgName: (orgById(c.orgId) || {}).name })),
     market: S.customBots.filter(c => c.publicStatus).map(c => ({ id: c.id, orgName: (orgById(c.orgId) || {}).name, def: c.def, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, publicReqAt: c.publicReqAt, stats: c.stats, sourceUrl: ((c.versions || []).slice(-1)[0] || {}).sourceUrl })),
     ledger: S.ledger.slice(-500).reverse()
   });
@@ -1340,6 +1375,30 @@ async function adminApi(req, res, p, sess) {
     else S.users = S.users.filter(x => x !== u);
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
+  }
+  // 원작 연결: 잘못 찾았으면 풀고(clear), 못 찾은 복사는 직접 연결(fromBotId)
+  const om = p.match(/^\/api\/admin\/bots\/(\w+)\/origin$/);
+  if (om) {
+    const c = S.customBots.find(x => x.id === om[1]); if (!c) return BAD(res, '없는 봇이에요', 404);
+    const room = S.rooms.find(r => r.orgId === c.orgId);
+    if (b.clear) {
+      if (!c.derivedFrom) return BAD(res, '원작과 연결된 봇이 아니에요');
+      c.noAutoOrigin = true; // 다시 자동으로 붙지 않게 (필요하면 운영 기관이 직접 연결)
+      const was = c.derivedFrom; c.derivedFrom = null;
+      if (room) addMsg(room, { from: 'sys', text: `운영 기관이 "${c.def ? c.def.name : '봇'}"의 원작 연결을 풀었어요. 이제 원작 기업 몫이 나가지 않아요.` });
+      const oroom = S.rooms.find(r => r.orgId === was.orgId);
+      if (oroom) addMsg(oroom, { from: 'sys', text: `운영 기관이 확인한 결과 ${(orgById(c.orgId) || {}).name}의 "${c.def ? c.def.name : '봇'}"은(는) 우리 봇의 복사가 아니라서 원작 연결을 풀었어요.` });
+    } else {
+      const o = S.customBots.find(x => x.id === b.fromBotId);
+      if (!o || o === c || o.orgId === c.orgId) return BAD(res, '원작은 다른 기업의 봇이어야 해요');
+      const root = rootOf(o); if (root === c || root.orgId === c.orgId) return BAD(res, '서로 복사로 이어진 봇이라 연결할 수 없어요');
+      c.derivedFrom = { botId: root.id, orgId: root.orgId, name: root.def ? root.def.name : '', score: null, manual: true, at: Date.now() };
+      const roy = royaltyOf(originOf(c));
+      if (room) addMsg(room, { from: 'sys', text: `운영 기관이 "${c.def ? c.def.name : '봇'}"을(를) ${(orgById(root.orgId) || {}).name}의 봇을 복사한 것으로 확인했어요. 이 봇을 쓸 때마다 요청당 ${roy}토큰이 원작 기업에 가요.` });
+      const oroom = S.rooms.find(r => r.orgId === root.orgId);
+      if (oroom) addMsg(oroom, { from: 'sys', text: `운영 기관이 ${(orgById(c.orgId) || {}).name}의 "${c.def ? c.def.name : '봇'}"을(를) 우리 "${root.def ? root.def.name : '봇'}"의 복사로 연결했어요. 쓰일 때마다 요청당 ${roy}토큰을 받아요.` });
+    }
+    save(); emit('room', {}, '*'); return json(res, 200, { ok: true });
   }
   const bm = p.match(/^\/api\/admin\/bots\/(\w+)\/(approve|reject|unpublish)$/);
   if (bm) {
@@ -1465,8 +1524,10 @@ async function userApi(req, res, p, sess) {
     });
   // ----- 봇 마켓 (직접 만든 봇) -----
   if (p.startsWith('/api/bots')) {
+    // 올리는 기업에게 보여 줄 원작 정보 (원작 봇 이름은 공개된 봇일 때만)
+    const originView = d => d ? { orgName: (orgById(d.orgId) || {}).name || d.orgName, name: (S.customBots.find(x => x.id === d.botId) || {}).publicStatus === 'public' ? d.name : '', score: d.score, royalty: royaltyOf({ rec: S.customBots.find(x => x.id === d.botId) }) } : null;
     const mineBot = id => S.customBots.find(c => c.id === id && c.orgId === org.id);
-    const view = c => ({ id: c.id, def: c.def, pending: c.pending, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, stats: c.stats || { uses: 0, earned: 0, byOrg: {} }, createdBy: c.createdBy, passes: Object.keys(c.passes || {}).filter(k => c.passes[k] > Date.now()).length });
+    const view = c => ({ id: c.id, def: c.def, pending: c.pending, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, stats: c.stats || { uses: 0, earned: 0, byOrg: {} }, createdBy: c.createdBy, passes: Object.keys(c.passes || {}).filter(k => c.passes[k] > Date.now()).length, origin: c.derivedFrom ? originView(c.derivedFrom) : null, copies: S.customBots.filter(x => x.derivedFrom && x.derivedFrom.botId === c.id).length });
     if (p === '/api/bots/mine' && req.method === 'GET') return json(res, 200, { bots: S.customBots.filter(c => c.orgId === org.id).map(view), prompt: MARKET.CLAUDE_PROMPT, kinds: MARKET.KINDS });
     if (p === '/api/bots/export' && req.method === 'GET') {
       const qs = new URL(req.url, 'http://x').searchParams;
@@ -1485,20 +1546,20 @@ async function userApi(req, res, p, sess) {
     if (p === '/api/bots/fetch') {
       const f = await MARKET.fetchPublic(str(b.url, 500)); if (f.error) return BAD(res, f.error);
       const e = MARKET.extractDef(f.text); if (e.error) return BAD(res, e.error);
-      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def, sourceUrl: f.finalUrl, meta: MARKET.readMeta(e.def) });
+      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def, sourceUrl: f.finalUrl, meta: MARKET.readMeta(e.def), origin: originView(findOrigin(org, v.def.role, null)) });
     }
     if (p === '/api/bots/parse') {
       const e = MARKET.extractDef(String(b.text || '').slice(0, 300000)); if (e.error) return BAD(res, e.error);
-      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def, meta: MARKET.readMeta(e.def) });
+      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def, meta: MARKET.readMeta(e.def), origin: originView(findOrigin(org, v.def.role, null)) });
     }
     if (p === '/api/bots/submit') {
       const v = MARKET.validateDef(b.def); if (v.error) return BAD(res, v.error);
       let c;
       if (b.botId) { c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404); }
       else { c = { id: 'u' + crypto.randomBytes(4).toString('hex'), orgId: org.id, def: null, versions: [], pricing: { perUse: null, passDays: null, passPrice: null }, publicStatus: null, passes: {}, stats: { uses: 0, earned: 0, byOrg: {} }, createdBy: user.name, createdAt: Date.now() }; S.customBots.push(c); }
-      c.pending = { def: v.def, by: user.name, at: Date.now(), sourceUrl: str(b.sourceUrl, 500), kind: c.def ? 'update' : 'new' };
+      c.pending = { def: v.def, by: user.name, at: Date.now(), sourceUrl: str(b.sourceUrl, 500), kind: c.def ? 'update' : 'new', derived: findOrigin(org, v.def.role, c) };
       const room = S.rooms.find(r => r.id === b.roomId && r.orgId === org.id) || S.rooms.find(r => r.orgId === org.id);
-      if (room) addMsg(room, { from: 'sys', text: `${user.name}님이 ${c.def ? `"${c.def.name}" 봇 업데이트` : `새 봇 "${v.def.name}"`}를 올렸어요. 확인하고 승인하면 우리 기업 봇 목록에 ${c.def ? '반영돼요' : '올라가요'}.`, botReq: { botId: c.id, status: null, kind: c.pending.kind, def: v.def, by: user.name, sourceUrl: c.pending.sourceUrl } });
+      if (room) addMsg(room, { from: 'sys', text: `${user.name}님이 ${c.def ? `"${c.def.name}" 봇 업데이트` : `새 봇 "${v.def.name}"`}를 올렸어요. 확인하고 승인하면 우리 기업 봇 목록에 ${c.def ? '반영돼요' : '올라가요'}.`, botReq: { botId: c.id, status: null, kind: c.pending.kind, def: v.def, by: user.name, sourceUrl: c.pending.sourceUrl, origin: c.derivedFrom ? originView(c.derivedFrom) : originView(c.pending.derived) } });
       save(); emit('room', {}, org.id);
       return json(res, 200, { ok: true, id: c.id });
     }
@@ -1515,9 +1576,16 @@ async function userApi(req, res, p, sess) {
       }
       c.versions.push({ def: c.pending.def, at: Date.now(), by: c.pending.by, approvedBy: user.name, sourceUrl: c.pending.sourceUrl });
       if (c.versions.length > 20) c.versions.shift();
-      const wasPublic = c.publicStatus === 'public', kind = c.pending.kind;
+      const wasPublic = c.publicStatus === 'public', kind = c.pending.kind, found = c.pending.derived;
       c.def = c.pending.def; c.pending = null;
+      // 복사로 찾으면 원작 연결 (한 번 연결되면 내용을 조금씩 바꿔도 유지, 운영 기관만 풀 수 있음)
+      if (found && !c.derivedFrom) {
+        c.derivedFrom = { botId: found.botId, orgId: found.orgId, name: found.name, score: found.score, at: Date.now() };
+        const oroom = S.rooms.find(r => r.orgId === found.orgId), roy = royaltyOf(originOf(c));
+        if (oroom) addMsg(oroom, { from: 'sys', text: `${org.name}이(가) 올린 "${c.def.name}"이(가) 우리 기업의 "${found.name}"과(와) ${found.score}% 같아요. 이 봇이 쓰일 때마다 요청당 ${roy}토큰을 우리 기업이 받아요. 잘못 찾은 것이면 운영 기관에 알려 주세요.` });
+      }
       if (wasPublic && kind === 'update') { c.publicStatus = 'pending'; c.publicReqAt = Date.now(); } // 공개 중인 봇이 바뀌면 관리자가 다시 확인
+      if (room && c.derivedFrom) addMsg(room, { from: 'sys', text: `"${c.def.name}"은(는) ${(orgById(c.derivedFrom.orgId) || {}).name || '다른 기업'}이(가) 먼저 만든 봇과 ${c.derivedFrom.score}% 같아서 원작 봇으로 연결했어요. 이 봇을 쓸 때마다 요청당 ${royaltyOf(originOf(c))}토큰이 원작 기업에 가요.` });
       if (room) addMsg(room, { from: 'sys', text: `"${c.def.name}" ${kind === 'update' ? `업데이트(버전 ${c.versions.length})를 반영했어요` : '봇을 우리 기업 봇 목록에 올렸어요. "전문가 초대"에서 초대할 수 있어요'}.${wasPublic && kind === 'update' ? ' 다른 기업에 공개 중이던 봇이라 관리자 확인이 끝날 때까지 다른 기업은 잠시 쓸 수 없어요.' : ''}` });
       save(); emit('room', {}, org.id); return json(res, 200, { ok: true });
     }
@@ -1547,7 +1615,8 @@ async function userApi(req, res, p, sess) {
       if (!reserveTokens(org, pr.passPrice)) return BAD(res, `이용권은 ${pr.passPrice}토큰이에요. 잔액(${org.wallet}토큰)이 부족해요.`);
       c.passes = c.passes || {};
       c.passes[org.id] = Math.max(Date.now(), c.passes[org.id] || 0) + pr.passDays * 864e5;
-      payShare(org, c, pr.passPrice, 'pass', null);
+      const o = originOf(c);
+      payShare(org, c, pr.passPrice, 'pass', null, o && orgById(o.orgId) && o.orgId !== org.id ? o : null);
       emit('room', {}, org.id);
       return json(res, 200, { ok: true, until: c.passes[org.id] });
     }

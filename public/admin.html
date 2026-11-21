@@ -108,6 +108,9 @@ td{border-bottom:1px solid var(--line);padding:10px 6px;vertical-align:middle}
  <h2>봇 마켓 심사</h2>
  <p class="lead" style="margin:-6px 0 14px">기업이 직접 만들어 다른 기업에 공개하려는 봇이에요. 역할 지시문은 운영 기관의 Claude API 비용으로 실행되니, 내용과 토큰 가격을 확인하고 승인하세요.</p>
  <div id="market"></div>
+ <h3 style="margin:18px 0 6px">복사로 찾은 봇</h3>
+ <p class="lead" style="margin:0 0 10px">역할 지시문이 다른 기업이 먼저 만든 봇과 많이 겹치면 원작으로 연결해, 쓰일 때마다 원작 기업에 몫이 가요. 잘못 찾았으면 풀고, 못 찾은 복사는 직접 연결하세요.</p>
+ <div id="copies"></div>
 
  <h2>사람 전문가</h2>
  <p class="lead" style="margin:-6px 0 14px" id="tgNote"></p>
@@ -133,7 +136,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const n=v=>(+v||0).toLocaleString('ko-KR');
 let D=null, es=null;
 const api=async(p,b)=>{const r=await fetch(p,{method:b?'POST':'GET',headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({error:'응답 오류'}));if(r.status===401&&p!=='/api/admin/login'){showLogin();throw new Error('login')}return j};
-const T={charge:'충전',deduct:'차감',pay:'상담 지급',payout:'정산',bot:'봇 사용',refill:'무제한 자동 충전',share:'봇 이용 몫 보냄',share_in:'봇 이용 몫 받음',pass:'봇 이용권 구매',pass_in:'봇 이용권 판매'};
+const T={charge:'충전',deduct:'차감',pay:'상담 지급',payout:'정산',bot:'봇 사용',refill:'무제한 자동 충전',share:'봇 이용 몫 보냄',share_in:'봇 이용 몫 받음',royalty:'복사 봇 원작 몫 보냄',royalty_in:'복사 봇 원작 몫 받음',pass:'봇 이용권 구매',pass_in:'봇 이용권 판매'};
 const when=t=>new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
 const say=(el,text,err)=>{el.className='msg'+(err?' err':'');el.textContent=text};
 
@@ -146,7 +149,7 @@ async function load(){
  $('sExpert').textContent=n(D.experts.reduce((a,x)=>a+x.balance,0));
  $('sCount').textContent=`${D.orgs.length} · ${D.experts.length} · ${D.orgs.filter(o=>o.unlimited&&o.unlimited.active).length}`;
  $('tgNote').textContent=D.telegram.enabled?`전문가는 텔레그램에서 @${D.telegram.username} 봇에게 등록코드를 보내 등록하고, /login 으로 프로필 페이지(/expert)에 들어가 시간당 토큰을 직접 정합니다. 단가를 정해야 기업 목록에 보입니다.`:'텔레그램 봇 토큰이 설정되지 않아 사람 전문가를 쓸 수 없어요.';
- renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();
+ renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderCopies();
 }
 const dstr=t=>new Date(t).toLocaleDateString('ko-KR',{month:'numeric',day:'numeric'});
 const tomorrow=()=>{const d=new Date(Date.now()+864e5+9*36e5);return d.toISOString().slice(0,10)};
@@ -178,6 +181,16 @@ function renderOrgs(){
  $('lf').value=D.orgs.some(o=>o.id===cur)?cur:'';
 }
 const MS={pending:'심사 대기',public:'공개 중',rejected:'거절됨'};
+function renderCopies(){
+ const C=D.copies||[],B=D.allBots||[],opt=B.map(b=>`<option value="${b.id}">${esc(b.name)} · ${esc(b.orgName)}</option>`).join('');
+ $('copies').innerHTML=(C.length?C.map(c=>`<div class="card" data-cp="${c.id}" style="margin-bottom:10px"><div class="head"><h3>${esc(c.name)} <span class="msg">${esc(c.orgName)}</span></h3><span class="msg">${c.manual?'운영 기관이 연결':c.score+'% 겹침'}</span></div><div class="msg">원작: ${esc(c.origin.name)} · ${esc(c.origin.orgName)} · 요청당 원작 몫 ${c.royalty}토큰</div><div class="inl"><button class="btn ghost sm" type="button" data-cpclear>원작 연결 풀기</button></div><div class="msg" data-msg></div></div>`).join(''):'<p class="empty">찾은 복사가 없어요.</p>')+
+ (B.length>1?`<div class="card" id="cpSet"><div class="msg">직접 연결: 복사한 봇</div><div class="inl"><select class="field" id="cpCopy">${opt}</select></div><div class="msg">원작 봇</div><div class="inl"><select class="field" id="cpFrom">${opt}</select><button class="btn sm" type="button" id="cpLink">원작으로 연결</button></div><div class="msg" data-msg></div></div>`:'');
+}
+$('copies').addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;let j,c;
+ if(b.hasAttribute('data-cpclear')){c=b.closest('[data-cp]');if(!confirm2(b,'정말 풀기'))return;j=await api(`/api/admin/bots/${c.dataset.cp}/origin`,{clear:true})}
+ else if(b.id==='cpLink'){c=$('cpSet');j=await api(`/api/admin/bots/${$('cpCopy').value}/origin`,{fromBotId:$('cpFrom').value})}
+ else return;
+ if(j&&j.error)return say(c.querySelector('[data-msg]'),j.error,1);load()});
 function renderMarket(){
  const L=D.market.slice().sort((x,y)=>(x.publicStatus==='pending'?0:1)-(y.publicStatus==='pending'?0:1));
  $('market').innerHTML=L.length?L.map(m=>{const d=m.def||{},p=m.pricing||{};return `<div class="card" data-mk="${m.id}" style="margin-bottom:12px"><div class="head"><h3>${esc(d.name)} <span class="tag ${m.publicStatus==='public'?'on':''}">${MS[m.publicStatus]||m.publicStatus}</span></h3><span class="msg">${esc(m.orgName)} · 버전 ${m.version}</span></div>
@@ -205,7 +218,7 @@ function renderExperts(){
 }
 function renderLedger(){
  const f=$('lf').value, rows=D.ledger.filter(l=>!f||l.orgId===f);
- $('ledger').innerHTML=rows.length?rows.map(l=>`<tr><td>${when(l.at)}</td><td>${esc(l.orgName||'—')}</td><td><span class="tag">${T[l.type]||l.type}</span></td><td>${esc(l.type==='pay'?`${l.roomName||''} → ${l.expertName}${l.minutes?` · ${l.minutes}분${l.suggested?` (계산 ${l.suggested}개)`:''}`:''}`:l.type==='payout'?`${l.expertName} 정산`:l.type==='bot'?`${l.botName}${l.roomName?' · '+l.roomName:''}`:l.type==='share'||l.type==='pass'?`${l.botName} → ${l.toOrgName}`:l.type==='share_in'||l.type==='pass_in'?`${l.botName} ← ${l.fromOrgName}`:'')}${l.memo?` <span style="color:var(--mute)">${esc(l.memo)}</span>`:''}</td><td class="num">${l.type==='charge'||l.type==='refill'||l.type==='share_in'||l.type==='pass_in'?'+':'−'}${n(l.amount)}</td><td class="num">${l.type==='payout'?'':n(l.walletAfter)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">아직 거래가 없어요.</td></tr>';
+ $('ledger').innerHTML=rows.length?rows.map(l=>`<tr><td>${when(l.at)}</td><td>${esc(l.orgName||'—')}</td><td><span class="tag">${T[l.type]||l.type}</span></td><td>${esc(l.type==='pay'?`${l.roomName||''} → ${l.expertName}${l.minutes?` · ${l.minutes}분${l.suggested?` (계산 ${l.suggested}개)`:''}`:''}`:l.type==='payout'?`${l.expertName} 정산`:l.type==='bot'?`${l.botName}${l.roomName?' · '+l.roomName:''}`:l.type==='royalty'?`${l.botName} (원작 ${l.originName}) → ${l.toOrgName}`:l.type==='royalty_in'?`${l.botName} (원작 ${l.originName}) ← ${l.fromOrgName}`:l.type==='share'||l.type==='pass'?`${l.botName} → ${l.toOrgName}`:l.type==='share_in'||l.type==='pass_in'?`${l.botName} ← ${l.fromOrgName}`:'')}${l.memo?` <span style="color:var(--mute)">${esc(l.memo)}</span>`:''}</td><td class="num">${l.type==='charge'||l.type==='refill'||l.type==='share_in'||l.type==='pass_in'||l.type==='royalty_in'?'+':'−'}${n(l.amount)}</td><td class="num">${l.type==='payout'?'':n(l.walletAfter)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">아직 거래가 없어요.</td></tr>';
 }
 // 두 번 눌러야 실행되는 위험 버튼
 const confirm2=(b,label)=>{if(b.dataset.armed)return true;b.dataset.armed=1;const old=b.textContent;b.textContent=label||'한 번 더 누르면 실행';setTimeout(()=>{delete b.dataset.armed;b.textContent=old},4000);return false};

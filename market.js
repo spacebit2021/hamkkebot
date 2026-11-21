@@ -90,6 +90,20 @@ function validateDef(o) {
   return { def };
 }
 
+// ----- 복사 찾기: 역할 지시문을 6글자 조각으로 나눠 겹치는 비율을 봄 (띄어쓰기·문장부호·줄바꿈 무시) -----
+const K = 6, MIN = 40;
+const normText = t => String(t || '').normalize('NFC').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+function grams(t, ignore) { const n = normText(t), g = new Set(); for (let i = 0; i + K <= n.length; i++) { const x = n.slice(i, i + K); if (!ignore || !ignore.has(x)) g.add(x); } return g; }
+// cover: 원작 조각 중 새 봇에 들어 있는 비율 (원작에 덧붙여도 높음), within: 새 봇 조각 중 원작에서 온 비율 (일부만 잘라 가도 높음)
+function overlap(newRole, origRole, ignore) {
+  const A = grams(newRole, ignore), B = grams(origRole, ignore);
+  if (B.size < MIN || A.size < MIN) return { score: 0, cover: 0, within: 0 };
+  let n = 0; for (const x of B) if (A.has(x)) n++;
+  const cover = n / B.size, within = n / A.size;
+  const copied = cover >= 0.6 || (within >= 0.8 && n >= MIN);
+  return { score: copied ? Math.round(Math.max(cover, within) * 100) : 0, cover, within };
+}
+
 // ----- 내보내기: 다시 올릴 수 있는 HTML 한 장 (Claude 아티팩트와 같은 형식) -----
 const escH = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 function exportDef(def, meta) {
@@ -146,4 +160,4 @@ const CLAUDE_PROMPT = `함께봇(사회적기업용 전문가 봇 플랫폼)에 
 
 제가 만들고 싶은 봇: `;
 
-module.exports = { exportHtml, exportDef, readMeta, checkUrl, fetchPublic, extractDef, validateDef, privateIp, KINDS, CLAUDE_PROMPT };
+module.exports = { overlap, grams, exportHtml, exportDef, readMeta, checkUrl, fetchPublic, extractDef, validateDef, privateIp, KINDS, CLAUDE_PROMPT };
