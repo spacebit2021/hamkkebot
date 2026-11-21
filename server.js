@@ -27,7 +27,18 @@ const BOTS = require('./bots');
 const DOC = require('./doc');
 const DECK = require('./deck');
 const SCHED = require('./sched');
-const botById = id => BOTS.find(b => b.id === id && !b.soon);
+const MARKET = require('./market');
+// 기본 봇 + 기업이 직접 만든 봇(S.customBots). 직접 만든 봇은 승인된 정의(def)가 있을 때만 쓸 수 있음
+const BUILTIN_ROLE = kind => (BOTS.find(b => b.kind === kind) || {}).role || '';
+const COMMON_RULES = `\n\n[함께봇 공통 규칙]\n- 기업 정보와 대화에 있는 사실만 쓰세요. 수치·인증·수상·후기·연락처를 지어내지 말고, 모르면 [확인 필요]로 남기세요.\n- 한국어로 답하세요.`;
+function customBotObj(c) {
+  const d = c.def; if (!d) return null;
+  const role = d.role + COMMON_RULES + (d.kind !== 'chat' ? `\n\n[이 종류 봇의 기본 규칙]\n${BUILTIN_ROLE(d.kind)}` : '');
+  return { id: c.id, name: d.name, short: d.short, color: d.color, tag: d.tag, desc: d.desc, hello: d.hello, quick: d.quick, kind: d.kind === 'chat' ? undefined : d.kind, ppt: d.ppt, role, custom: true, ownerOrgId: c.orgId, pricing: c.pricing || {} };
+}
+const botById = id => BOTS.find(b => b.id === id && !b.soon) || (S.customBots && (c => c ? customBotObj(c) : null)(S.customBots.find(x => x.id === id)));
+// 이 기업이 쓸 수 있는 봇인지: 기본 봇, 우리 기업이 만든(승인된) 봇, 관리자가 공개한 봇
+const canUseBot = (org, id) => { if (BOTS.some(b => b.id === id && !b.soon)) return true; const c = (S.customBots || []).find(x => x.id === id); return !!(c && c.def && (c.orgId === org.id || c.publicStatus === 'public')); };
 
 // ---------- 저장소 (data.json) ----------
 // orgs:    기업 [{id,name,mission,product,target,tone,wallet}]
@@ -53,9 +64,10 @@ if (!S.sessions) S.sessions = {};
 if (!S.dmMap) S.dmMap = {};
 if (!S.expertLogins) S.expertLogins = {}; // 전문가 웹 로그인용 1회용 코드
 if (!S.expertGroups) S.expertGroups = {};
-if (!S.botCosts) S.botCosts = {};           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
+if (!S.botCosts) S.botCosts = {};
+if (!S.customBots) S.customBots = [];   // 봇 마켓: 기업이 직접 만든 봇           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
 // 요청당 토큰: 관리자 설정 > bots.js 기본값. 'summary'는 함께봇 문서 정리
-const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).flatMap(b => [{ id: b.id, name: b.name, def: b.cost || 0 }, ...(b.extraCosts || [])]), { id: 'summary', name: '함께봇 문서 정리', def: 1 }];
+const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).flatMap(b => [{ id: b.id, name: b.name, def: b.cost || 0 }, ...(b.extraCosts || [])]), { id: 'summary', name: '함께봇 문서 정리', def: 1 }, { id: 'custom', name: '직접 만든 봇 (글 답변)', def: 1 }, { id: 'custom_ppt', name: '직접 만든 봇 PPT', def: 3 }];
 const PPT_RE = /ppt|피피티|파워\s*포인트|발표\s*자료|슬라이드|프레젠테이션|소개\s*자료|덱/i;
 const costOf = id => { const v = S.botCosts[id]; if (Number.isInteger(v)) return v; const it = COST_ITEMS().find(x => x.id === id); return it ? it.def : 0; };
 // 토큰 미리 잡기 → 성공하면 기록, 실패하면 돌려줌 (동시에 여러 요청이 와도 잔액을 넘지 않게)
@@ -260,34 +272,57 @@ async function askClaude(bot, room, text) {
   if (r.error) return { error: r.error };
   return { text: r.text + (r.cut ? '\n\n(답변이 길어 중간에 끊겼어요. "이어서"라고 보내 주세요.)' : '') };
 }
+// 다른 기업이 만든 봇의 몫을 만든 기업에 보냄 (토큰은 이미 이용 기업 잔액에서 잡아 둔 상태)
+function payShare(fromOrg, c, amount, type, room) {
+  const owner = orgById(c.orgId); if (!owner || amount <= 0) return;
+  const name = c.def ? c.def.name : '봇';
+  record(fromOrg, { type, amount, botId: c.id, botName: name, toOrgName: owner.name, roomId: room && room.id, roomName: room && room.name });
+  afterSpend(fromOrg);
+  owner.wallet += amount;
+  record(owner, { type: type + '_in', amount, botId: c.id, botName: name, fromOrgName: fromOrg.name });
+  c.stats = c.stats || { uses: 0, earned: 0, byOrg: {} }; c.stats.earned += amount; save();
+}
 // 봇 실행: 토큰을 먼저 잡고 → 답을 받으면 사용 기록, 실패하면 돌려줌
 async function runBot(room, botId, text, ctx = {}) {
   const bot = botById(botId);
   if (!bot) return;
   const org = orgById(room.orgId);
-  // 봇 종류·요청에 따라 실행할 일과 토큰 항목을 정함
-  let costId = bot.id, run;
+  if (!canUseBot(org, bot.id)) { addMsg(room, { from: 'sys', text: `${bot.name}은(는) 지금 쓸 수 없는 봇이에요 (공개가 중단됐거나 승인 전이에요).` }); return; }
+  // 봇 종류·요청에 따라 실행할 일과 토큰 항목을 정함 (직접 만든 봇은 종류별 기본 항목을 따름)
+  let costId = bot.custom ? (bot.kind === 'site' ? 'site' : 'custom') : bot.id, run;
   const isDeck = !!bot.ppt && PPT_RE.test(text);
   if (bot.kind === 'site') run = () => runSiteBot(bot, room, org, text);
   else if (bot.kind === 'sched') { const mode = schedMode(text); costId = mode === 'detail' ? 'sched_detail' : mode === 'ppt' ? 'sched_ppt' : 'sched'; run = () => runSchedBot(bot, room, org, text, mode, ctx); }
   else if (bot.kind === 'ir') { const mode = irMode(org, text); costId = mode === 'create' ? 'ir' : mode === 'vc' ? 'ir_vc' : 'ir_update'; run = () => runIrBot(bot, room, org, text, mode); }
-  else if (isDeck) { costId = `${bot.id}_ppt`; run = () => runDeckBot(bot, room, org, text); }
+  else if (isDeck) { costId = bot.custom ? 'custom_ppt' : `${bot.id}_ppt`; run = () => runDeckBot(bot, room, org, text); }
   else run = () => askClaude(bot, room, text);
-  const cost = costOf(costId), costName = (COST_ITEMS().find(c => c.id === costId) || {}).name || bot.name;
+  const cost = costOf(costId), costName = bot.custom ? bot.name : (COST_ITEMS().find(c => c.id === costId) || {}).name || bot.name;
+  // 다른 기업이 만든 봇: 요청당 몫을 만든 기업에 보냄 (기간 이용권이 있으면 없음, 이용권 전용이면 이용권 필요)
+  let share = 0; const cb = bot.custom && bot.ownerOrgId !== org.id ? S.customBots.find(x => x.id === bot.id) : null;
+  if (cb) {
+    const pr = cb.pricing || {}, pass = (cb.passes || {})[org.id];
+    const hasPass = pass && pass > Date.now();
+    if (!hasPass) {
+      if (pr.perUse == null && pr.passPrice != null) { addMsg(room, { from: 'sys', text: `${bot.name}은(는) 기간 이용권으로만 쓸 수 있어요 (${pr.passDays}일 ${pr.passPrice}토큰). "전문가 초대" 목록에서 이용권을 사 주세요.` }); return; }
+      share = pr.perUse || 0;
+    }
+  }
   const say = (t, extra = {}) => { addMsg(room, { from: bot.id, text: t, ...extra }); if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${extra.tgText || t}`); };
   if (!ANTHROPIC_API_KEY) return say('서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.');
-  if (!reserveTokens(org, cost)) {
-    addMsg(room, { from: 'sys', text: `${costName}은(는) 요청당 ${cost}토큰을 써요. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
-    if (room.tgChatId) tgSend(room.tgChatId, `${bot.name}: 토큰 잔액이 부족해요 (필요 ${cost}, 잔액 ${org.wallet}).`);
+  if (!reserveTokens(org, cost + share)) {
+    addMsg(room, { from: 'sys', text: `${costName}은(는) 요청당 ${cost + share}토큰을 써요${share ? ` (만든 기업 몫 ${share} 포함)` : ''}. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
+    if (room.tgChatId) tgSend(room.tgChatId, `${bot.name}: 토큰 잔액이 부족해요 (필요 ${cost + share}, 잔액 ${org.wallet}).`);
     return;
   }
   if (!ctx.silent) { emit('typing', { roomId: room.id, botId }, room.orgId); if (room.tgChatId) tg('sendChatAction', { chat_id: room.tgChatId, action: 'typing' }); }
   const r = await run();
-  if (r.silent) return refundTokens(org, cost); // 일정 이야기가 아니었음: 조용히 넘어감
-  if (r.error) { refundTokens(org, cost); return say(`${r.error}${cost ? ' (토큰은 쓰지 않았어요)' : ''}`); }
-  if (r.free) { refundTokens(org, cost); return say(r.text, { ...(r.sched ? { sched: r.sched } : {}) }); } // 질문·링크 안내는 무료
+  if (r.silent) return refundTokens(org, cost + share); // 일정 이야기가 아니었음: 조용히 넘어감
+  if (r.error) { refundTokens(org, cost + share); return say(`${r.error}${cost + share ? ' (토큰은 쓰지 않았어요)' : ''}`); }
+  if (r.free) { refundTokens(org, cost + share); return say(r.text, { ...(r.sched ? { sched: r.sched } : {}) }); } // 질문·링크 안내는 무료
   chargeRecord(org, cost, { botId: costId, botName: costName, roomId: room.id, roomName: room.name });
-  say(r.text, { cost, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}) });
+  if (bot.custom) { const c = S.customBots.find(x => x.id === bot.id); if (c) { c.stats = c.stats || { uses: 0, earned: 0, byOrg: {} }; c.stats.uses++; c.stats.byOrg[org.id] = (c.stats.byOrg[org.id] || 0) + 1; } }
+  if (share) payShare(org, cb, share, 'share', room);
+  say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}) });
   if (r.after) r.after();
   if (r.deck && room.tgChatId) { const d = deckById(org, r.deck.id); if (d) tgSendDoc(room.tgChatId, deckFileName(org, d), await DECK.buildDeck(d.outline, org.name), `${d.title} (PPT v${d.n})`, PPTX_MIME); }
 }
@@ -1125,7 +1160,14 @@ async function pollTelegram() {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const json = (res, code, obj, headers) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...(headers || {}) }); res.end(JSON.stringify(obj)); };
 const body = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(d || '{}')); } catch (_) { ok({}); } }); });
-const publicBots = () => BOTS.map(({ role, ...b }) => ({ ...b, cost: b.soon ? null : costOf(b.id) }));
+const publicBots = org => [
+  ...BOTS.map(({ role, ...b }) => ({ ...b, cost: b.soon ? null : costOf(b.id) })),
+  ...(org ? S.customBots.filter(c => canUseBot(org, c.id)).map(c => {
+    const o = customBotObj(c), mine = c.orgId === org.id, pass = (c.passes || {})[org.id];
+    const base = o.kind === 'site' ? costOf('site') : o.kind === 'ir' ? costOf('ir') : o.kind === 'sched' ? costOf('sched') : costOf('custom');
+    return { id: c.id, name: o.name, short: o.short, color: o.color, tag: o.tag, desc: o.desc, hello: o.hello, quick: o.quick, kind: o.kind, ppt: o.ppt, custom: true, mine, ownerName: (orgById(c.orgId) || {}).name, cost: base + (mine || (pass && pass > Date.now()) ? 0 : (c.pricing || {}).perUse || 0), pricing: mine ? c.pricing || {} : { perUse: (c.pricing || {}).perUse, passDays: (c.pricing || {}).passDays, passPrice: (c.pricing || {}).passPrice }, passUntil: pass && pass > Date.now() ? pass : null };
+  }) : [])
+];
 const publicExperts = () => S.experts.filter(e => e.tgChatId && e.rate).map(e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, color: e.color, linked: true }));
 const expertProfile = e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, balance: e.balance });
 const orgPublic = o => ({ id: o.id, name: o.name, mission: o.mission, product: o.product, target: o.target, tone: o.tone });
@@ -1150,6 +1192,7 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
+    market: S.customBots.filter(c => c.publicStatus).map(c => ({ id: c.id, orgName: (orgById(c.orgId) || {}).name, def: c.def, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, publicReqAt: c.publicReqAt, stats: c.stats, sourceUrl: ((c.versions || []).slice(-1)[0] || {}).sourceUrl })),
     ledger: S.ledger.slice(-500).reverse()
   });
   if (req.method !== 'POST') return json(res, 405, {});
@@ -1225,6 +1268,17 @@ async function adminApi(req, res, p, sess) {
     else S.users = S.users.filter(x => x !== u);
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
+  }
+  const bm = p.match(/^\/api\/admin\/bots\/(\w+)\/(approve|reject|unpublish)$/);
+  if (bm) {
+    const c = S.customBots.find(x => x.id === bm[1]); if (!c) return BAD(res, '없는 봇이에요', 404);
+    if (bm[2] === 'approve') { if (c.publicStatus !== 'pending') return BAD(res, '심사 중인 봇이 아니에요'); c.publicStatus = 'public'; c.publicAt = Date.now(); c.publicReason = null; }
+    else if (bm[2] === 'reject') { c.publicStatus = 'rejected'; c.publicReason = str(b.reason, 200) || '운영 기관 검토 결과 공개하지 않기로 했어요'; }
+    else c.publicStatus = null;
+    save(); emit('room', {}, '*');
+    const room = S.rooms.find(r => r.orgId === c.orgId);
+    if (room && c.def) addMsg(room, { from: 'sys', text: bm[2] === 'approve' ? `"${c.def.name}" 봇이 운영 기관 승인을 받아 다른 기업에도 공개됐어요.` : bm[2] === 'reject' ? `"${c.def.name}" 봇을 다른 기업에 공개하지 않기로 했어요: ${c.publicReason}` : `"${c.def.name}" 봇의 다른 기업 공개를 운영 기관이 중단했어요.` });
+    return json(res, 200, { ok: true });
   }
   if (p === '/api/admin/costs') {
     const next = {};
@@ -1330,12 +1384,91 @@ async function userApi(req, res, p, sess) {
   if (p === '/api/state' && req.method === 'GET')
     return json(res, 200, {
       me: { loginId: user.loginId, name: user.name }, org: orgPublic(org), wallet: org.wallet,
-      rooms: S.rooms.filter(r => r.orgId === org.id), bots: publicBots(), experts: publicExperts(),
+      rooms: S.rooms.filter(r => r.orgId === org.id), bots: publicBots(org), experts: publicExperts(),
       telegram: { enabled: !!tgUsername, username: tgUsername }, ai: !!ANTHROPIC_API_KEY,
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
       sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null
     });
+  // ----- 봇 마켓 (직접 만든 봇) -----
+  if (p.startsWith('/api/bots')) {
+    const mineBot = id => S.customBots.find(c => c.id === id && c.orgId === org.id);
+    const view = c => ({ id: c.id, def: c.def, pending: c.pending, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, stats: c.stats || { uses: 0, earned: 0, byOrg: {} }, createdBy: c.createdBy, passes: Object.keys(c.passes || {}).filter(k => c.passes[k] > Date.now()).length });
+    if (p === '/api/bots/mine' && req.method === 'GET') return json(res, 200, { bots: S.customBots.filter(c => c.orgId === org.id).map(view), prompt: MARKET.CLAUDE_PROMPT, kinds: MARKET.KINDS });
+    if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
+    const b = await body(req);
+    if (p === '/api/bots/fetch') {
+      const f = await MARKET.fetchPublic(str(b.url, 500)); if (f.error) return BAD(res, f.error);
+      const e = MARKET.extractDef(f.text); if (e.error) return BAD(res, e.error);
+      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def, sourceUrl: f.finalUrl });
+    }
+    if (p === '/api/bots/parse') {
+      const e = MARKET.extractDef(String(b.text || '').slice(0, 300000)); if (e.error) return BAD(res, e.error);
+      const v = MARKET.validateDef(e.def); return v.error ? BAD(res, v.error) : json(res, 200, { def: v.def });
+    }
+    if (p === '/api/bots/submit') {
+      const v = MARKET.validateDef(b.def); if (v.error) return BAD(res, v.error);
+      let c;
+      if (b.botId) { c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404); }
+      else { c = { id: 'u' + crypto.randomBytes(4).toString('hex'), orgId: org.id, def: null, versions: [], pricing: { perUse: null, passDays: null, passPrice: null }, publicStatus: null, passes: {}, stats: { uses: 0, earned: 0, byOrg: {} }, createdBy: user.name, createdAt: Date.now() }; S.customBots.push(c); }
+      c.pending = { def: v.def, by: user.name, at: Date.now(), sourceUrl: str(b.sourceUrl, 500), kind: c.def ? 'update' : 'new' };
+      const room = S.rooms.find(r => r.id === b.roomId && r.orgId === org.id) || S.rooms.find(r => r.orgId === org.id);
+      if (room) addMsg(room, { from: 'sys', text: `${user.name}님이 ${c.def ? `"${c.def.name}" 봇 업데이트` : `새 봇 "${v.def.name}"`}를 올렸어요. 확인하고 승인하면 우리 기업 봇 목록에 ${c.def ? '반영돼요' : '올라가요'}.`, botReq: { botId: c.id, status: null, kind: c.pending.kind, def: v.def, by: user.name, sourceUrl: c.pending.sourceUrl } });
+      save(); emit('room', {}, org.id);
+      return json(res, 200, { ok: true, id: c.id });
+    }
+    if (p === '/api/bots/review') {
+      const c = mineBot(b.botId); if (!c || !c.pending) return BAD(res, '승인할 봇이 없어요', 404);
+      const room = S.rooms.find(r => r.orgId === org.id && r.msgs.some(m => m.id === b.msgId));
+      const msg = room && room.msgs.find(m => m.id === b.msgId);
+      if (msg && msg.botReq) msg.botReq.status = b.approve ? 'approved' : 'rejected';
+      if (!b.approve) {
+        const was = c.pending; c.pending = null;
+        if (!c.def) S.customBots = S.customBots.filter(x => x !== c);
+        if (room) addMsg(room, { from: 'sys', text: `"${was.def.name}" ${was.kind === 'update' ? '업데이트' : '봇'}를 승인하지 않았어요${b.reason ? ` (${str(b.reason, 100)})` : ''}.` });
+        save(); emit('room', {}, org.id); return json(res, 200, { ok: true });
+      }
+      c.versions.push({ def: c.pending.def, at: Date.now(), by: c.pending.by, approvedBy: user.name, sourceUrl: c.pending.sourceUrl });
+      if (c.versions.length > 20) c.versions.shift();
+      const wasPublic = c.publicStatus === 'public', kind = c.pending.kind;
+      c.def = c.pending.def; c.pending = null;
+      if (wasPublic && kind === 'update') { c.publicStatus = 'pending'; c.publicReqAt = Date.now(); } // 공개 중인 봇이 바뀌면 관리자가 다시 확인
+      if (room) addMsg(room, { from: 'sys', text: `"${c.def.name}" ${kind === 'update' ? `업데이트(버전 ${c.versions.length})를 반영했어요` : '봇을 우리 기업 봇 목록에 올렸어요. "전문가 초대"에서 초대할 수 있어요'}.${wasPublic && kind === 'update' ? ' 다른 기업에 공개 중이던 봇이라 관리자 확인이 끝날 때까지 다른 기업은 잠시 쓸 수 없어요.' : ''}` });
+      save(); emit('room', {}, org.id); return json(res, 200, { ok: true });
+    }
+    if (p === '/api/bots/pricing') {
+      const c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404);
+      const int = (v, lo, hi) => v === '' || v == null ? null : (Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi ? Number(v) : NaN);
+      const perUse = int(b.perUse, 0, 1000), passDays = int(b.passDays, 1, 365), passPrice = int(b.passPrice, 1, 100000);
+      if ([perUse, passDays, passPrice].some(Number.isNaN)) return BAD(res, '요청당 0~1000, 이용권 1~365일·1~100000토큰 사이 정수로 정해 주세요');
+      if ((passDays == null) !== (passPrice == null)) return BAD(res, '기간 이용권은 기간과 토큰을 함께 정해 주세요');
+      c.pricing = { perUse, passDays, passPrice }; save(); emit('room', {}, '*');
+      return json(res, 200, { ok: true });
+    }
+    if (p === '/api/bots/publish' || p === '/api/bots/unpublish' || p === '/api/bots/delete') {
+      const c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404);
+      if (p === '/api/bots/delete') { S.customBots = S.customBots.filter(x => x !== c); save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
+      if (p === '/api/bots/unpublish') { c.publicStatus = null; save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
+      if (!c.def) return BAD(res, '먼저 기업방에서 승인해 주세요');
+      const pr = c.pricing || {};
+      if (pr.perUse == null && pr.passPrice == null) return BAD(res, '다른 기업이 쓸 때의 토큰(요청당 또는 기간 이용권)을 먼저 정해 주세요. 무료로 공개하려면 요청당 0으로 정하세요.');
+      c.publicStatus = 'pending'; c.publicReqAt = Date.now(); c.publicReason = null; save(); emit('room', {}, org.id);
+      return json(res, 200, { ok: true });
+    }
+    if (p === '/api/bots/pass') {
+      const c = S.customBots.find(x => x.id === b.botId && x.publicStatus === 'public' && x.orgId !== org.id);
+      if (!c) return BAD(res, '이용권을 살 수 있는 봇이 아니에요', 404);
+      const pr = c.pricing || {}; if (pr.passPrice == null) return BAD(res, '이 봇은 기간 이용권이 없어요');
+      if (!reserveTokens(org, pr.passPrice)) return BAD(res, `이용권은 ${pr.passPrice}토큰이에요. 잔액(${org.wallet}토큰)이 부족해요.`);
+      c.passes = c.passes || {};
+      c.passes[org.id] = Math.max(Date.now(), c.passes[org.id] || 0) + pr.passDays * 864e5;
+      payShare(org, c, pr.passPrice, 'pass', null);
+      emit('room', {}, org.id);
+      return json(res, 200, { ok: true, until: c.passes[org.id] });
+    }
+    return BAD(res, '없는 기능이에요', 404);
+  }
+
   // ----- 일정표 -----
   if (p === '/api/sched' && req.method === 'GET') { const sc = ensureSched(org); return json(res, 200, { url: schedUrl(org), v: sc.v, items: sc.items, log: sc.log.slice(0, 30) }); }
   if (p === '/api/sched/token' && req.method === 'POST') { const sc = ensureSched(org); sc.token = crypto.randomBytes(12).toString('hex'); save(); emit('sched', {}, org.id); return json(res, 200, { url: schedUrl(org) }); }
@@ -1541,7 +1674,7 @@ async function userApi(req, res, p, sess) {
   if (!room || room.orgId !== org.id) return BAD(res, '방이 없어요', 404); // 다른 기업의 방은 없는 것으로 취급
   const act = m[2];
   if (act === 'invite') {
-    const bot = botById(b.botId); if (!bot) return BAD(res, '없는 봇이에요');
+    const bot = botById(b.botId); if (!bot || !canUseBot(org, bot.id)) return BAD(res, '없는 봇이에요');
     if (!room.bots.includes(bot.id)) {
       room.bots.push(bot.id); addMsg(room, { from: 'sys', text: `${bot.name}을(를) 초대했어요` }); addMsg(room, { from: bot.id, text: bot.hello });
       if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}] 이 방에 초대됐어요. /${bot.id} 요청내용 으로 불러 주세요.`);

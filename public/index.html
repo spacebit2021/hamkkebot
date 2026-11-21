@@ -116,6 +116,13 @@ button{cursor:pointer}
 .irfinal{border-radius:12px;padding:10px 14px;background:light-dark(#e3f6ee,#12352a);font-size:14px}
 .vclist{list-style:none;margin:0;padding:0}.vclist li{border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--card)}
 .vclist a{overflow-wrap:anywhere;font-size:13px}.revlist li{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.tag.mk{color:#7a5af8}
+.mkt textarea{width:100%;min-height:120px;font:13px/1.5 ui-monospace,monospace}
+.mkprev{border:1.5px solid #7a5af8;border-radius:14px;padding:14px;background:var(--card);display:flex;flex-direction:column;gap:8px}
+.mkprev pre{white-space:pre-wrap;font-size:12px;max-height:180px;overflow:auto;background:var(--side);border-radius:10px;padding:10px;margin:0}
+.mkbot{border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:10px;background:var(--card)}
+.mkbot .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.mkbot .inl{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:13px}.mkbot .inl input{width:90px;min-height:38px}
+.st{font-size:12px;padding:2px 8px;border-radius:8px;background:var(--side)}
 .typing{color:var(--mute);font-size:14px;padding:0 4px}
 .tools{display:flex;gap:6px;margin-top:6px}
 .tools button{border:0;background:none;color:var(--mute);font-size:13px;min-height:32px;padding:0 6px}
@@ -242,6 +249,13 @@ textarea.field{min-height:80px;resize:vertical}
  </div>
 </div>
 
+<div class="veil docveil" id="mkVeil" role="dialog" aria-modal="true" aria-labelledby="mkTitle">
+ <div class="sheet docsheet mkt">
+  <div class="dochead"><div><h3 id="mkTitle">봇 만들기·올리기</h3><div class="note" style="padding:0">Claude로 만든 봇을 올리면 기업방에서 승인한 뒤 우리 기업 봇 목록에 올라가요. 운영 기관 승인을 받으면 다른 기업도 쓸 수 있고, 그때 받는 토큰을 정할 수 있어요.</div></div><button class="btn ghost" type="button" data-close>닫기</button></div>
+  <div id="mkMain"></div>
+ </div>
+</div>
+
 <div class="veil" id="orgVeil" role="dialog" aria-modal="true" aria-labelledby="orgTitle">
  <form class="sheet" id="orgForm">
   <h3 id="orgTitle">우리 기업 정보</h3>
@@ -307,6 +321,9 @@ function renderTop(){
  {const cb=botById($('to').value);if(S.ai&&cb&&cb.cost!=null)$('note').textContent=`${cb.name}은(는) 요청당 ${cb.cost}토큰${cb.ppt&&S.costs?` (PPT는 ${S.costs[cb.id+'_ppt']}토큰)`:''}을 써요 (잔액 ${S.wallet}토큰). 실패하면 토큰은 빠지지 않아요. 답변은 초안이니 사실은 직접 확인하세요.`}
 }
 function msgHTML(m,i){
+ if(m.from==='sys'&&m.botReq){const q=m.botReq,dd=q.def,head=`<div class="msg sys">${esc(m.text)}</div>`;
+  if(q.status)return head+`<div class="msg sys">${q.status==='approved'?'승인했어요':'승인하지 않았어요'}</div>`;
+  return head+`<div class="paycard botreq" data-botreq="${m.id}" data-bot="${q.botId}"><b>${esc(dd.name)} ${q.kind==='update'?'업데이트':'새 봇'} · ${esc(({chat:'글 답변',site:'홈페이지',ir:'IR',sched:'일정'})[dd.kind]||dd.kind)}${dd.ppt?' + PPT':''}</b><div class="paycalc">${esc(dd.desc)}</div>${dd.quick.length?`<div class="paycalc">빠른 요청: ${dd.quick.map(esc).join(' · ')}</div>`:''}<details class="prof"><summary>역할 지시문 보기</summary><p style="white-space:pre-wrap">${esc(dd.role)}</p></details>${q.sourceUrl?`<div class="paycalc">출처: ${esc(q.sourceUrl)}</div>`:''}<div class="acts"><button class="btn" type="button" data-bok>승인</button><button class="btn ghost" type="button" data-bno>거절</button></div><div class="payerr" data-err></div></div>`}
  if(m.from==='sys'&&m.join){const j=m.join,head=`<div class="msg sys">${esc(m.text)}</div>`;
   if(j.status)return head+`<div class="msg sys">${j.status==='approved'?'참여를 승인했어요':'참여 요청을 거절했어요'}</div>`;
   const mins=j.rate?Math.floor(S.wallet/j.rate*60):0, low=S.wallet<j.rate;
@@ -339,9 +356,9 @@ let callOpen=null, reviewMsg=null, xq='', xsort='';
 function renderBots(){
  const r=room(), hs=r.humans||[];
  $('dirLead').textContent=reviewMsg?'초안을 검토받을 사람 전문가를 골라 주세요.':'AI 봇은 바로 답하고, 사람 전문가는 텔레그램으로 호출돼 답장합니다.';
- const botCards=S.bots.map(b=>{
+ const card=b=>{
   const inRoom=r.bots.includes(b.id);
-  return `<div class="bot ${b.soon?'soon':''}"><header>${av(b)}<div><b>${esc(b.name)}</b><div class="tag">${esc(b.tag)}${b.soon?'':' · 텔레그램 /'+esc(b.id)}</div></div>${b.soon?'':`<div class="rate"><b>${b.cost}</b><span>${b.cost?'토큰/요청':'무료'}</span></div>`}</header><p>${esc(b.desc)}</p>${b.soon?'<span class="soonchip">준비 중</span>':inRoom?'<button class="btn ghost" data-kick="'+b.id+'">내보내기</button>':'<button class="btn" data-invite="'+b.id+'">초대하기</button>'}</div>`}).join('');
+  return `<div class="bot ${b.soon?'soon':''}"><header>${av(b)}<div><b>${esc(b.name)}</b><div class="tag">${esc(b.tag)}${b.soon?'':' · 텔레그램 /'+esc(b.id)}</div>${b.custom?`<div class="tag mk">${b.mine?'우리 기업이 만든 봇':`${esc(b.ownerName)} 제작${b.pricing.perUse?` · 요청당 +${b.pricing.perUse}토큰`:b.pricing.perUse===0?' · 추가 토큰 없음':''}${b.pricing.passPrice!=null?` · ${b.pricing.passDays}일 이용권 ${b.pricing.passPrice}토큰`:''}${b.passUntil?` · 이용권 ${new Date(b.passUntil).toLocaleDateString('ko-KR')}까지`:''}`}</div>`:''}</div>${b.soon?'':`<div class="rate"><b>${b.cost}</b><span>${b.cost?'토큰/요청':'무료'}</span></div>`}</header><p>${esc(b.desc)}</p>${b.custom&&!b.mine&&b.pricing.passPrice!=null&&!b.passUntil?`<button class="btn ghost" type="button" data-pass="${b.id}">${b.pricing.passDays}일 이용권 사기 (${b.pricing.passPrice}토큰)</button>`:''}${b.soon?'<span class="soonchip">준비 중</span>':inRoom?'<button class="btn ghost" data-kick="'+b.id+'">내보내기</button>':'<button class="btn" data-invite="'+b.id+'">초대하기</button>'}</div>`};
  const affordable=x=>x.rate?Math.floor(S.wallet/x.rate*60):0;
  const fmtMin=m=>m>=60?`${Math.floor(m/60)}시간${m%60?' '+m%60+'분':''}`:`${m}분`;
  let list=(S.experts||[]).filter(x=>!xq||(x.name+x.field+(x.desc||'')+(x.career||'')).toLowerCase().includes(xq.toLowerCase()));
@@ -360,7 +377,8 @@ function renderBots(){
   return `<div class="bot"><header>${xAv(x)}<div style="flex:1"><b>${esc(x.name)}</b><div class="tag">${esc(x.field)}${on?' · 상담 중':''}</div></div><div class="rate"><b>${x.rate}</b><span>토큰/시간</span></div></header>${x.desc?`<p>${esc(x.desc)}</p>`:''}${prof}${act}</div>`}).join('');
  const xTools=(S.experts||[]).length>1&&!callOpen?`<div class="xtools"><input class="field" id="xq" placeholder="분야·이름 검색" value="${esc(xq)}" aria-label="전문가 검색"><select class="field" id="xsort" aria-label="정렬"><option value="">기본 순</option><option value="low"${xsort==='low'?' selected':''}>단가 낮은 순</option><option value="high"${xsort==='high'?' selected':''}>단가 높은 순</option></select></div>`:'';
  const tgOff=!S.telegram.enabled?'<p class="note" style="padding:0">사람 전문가 호출은 텔레그램 봇 토큰이 설정돼야 쓸 수 있어요.</p>':'';
- $('botGrid').innerHTML=(reviewMsg?'':`<h4 class="dirh">AI 전문가 봇</h4><div class="grid">${botCards}</div>`)+
+ const builtins=S.bots.filter(b=>!b.custom).map(card).join(''), ours=S.bots.filter(b=>b.custom&&b.mine).map(card).join(''), others=S.bots.filter(b=>b.custom&&!b.mine).map(card).join('');
+ $('botGrid').innerHTML=(reviewMsg?'':`<h4 class="dirh">AI 전문가 봇</h4><div class="grid">${builtins}</div>${ours?`<h4 class="dirh">우리 기업이 만든 봇</h4><div class="grid">${ours}</div>`:''}${others?`<h4 class="dirh">다른 기업이 만든 봇</h4><div class="grid">${others}</div>`:''}<div class="row" style="justify-content:flex-start;margin:10px 0 0"><button class="btn ghost" type="button" id="openMarket">+ 봇 만들기·올리기</button></div>`)+
   `<h4 class="dirh">사람 전문가 <span style="font-weight:500">· 잔액 ${S.wallet}토큰</span></h4>${tgOff}${xTools}<div class="grid">${xCards||'<p class="note" style="padding:0">아직 등록된 사람 전문가가 없어요. 운영 기관에 요청해 주세요.</p>'}</div>`;
  if(callOpen&&$('callText'))$('callText').focus();
  if($('xq'))$('xq').oninput=e=>{xq=e.target.value;const pos=e.target.selectionStart;renderBots();const q=$('xq');if(q){q.focus();q.setSelectionRange(pos,pos)}};
@@ -393,6 +411,8 @@ $('botGrid').addEventListener('click',async e=>{
  const t=e.target.closest('button');if(!t)return;const r=room(),d=t.dataset;
  const post=async(p,b)=>{const j=await api(p,b);if(j&&j.error)$('dirLead').textContent=j.error;return j};
  if(d.invite){await post(`/api/rooms/${r.id}/invite`,{botId:d.invite});close(t);return}
+ if(d.pass){if(t.textContent.indexOf('정말')<0){t.textContent='정말 살까요? '+t.textContent;return}const j=await post('/api/bots/pass',{botId:d.pass});if(!j.error)$('dirLead').textContent='이용권을 샀어요. 이제 이 봇을 초대해서 쓸 수 있어요.'}
+ if(t.id==='openMarket'){close(t);openMarket();return}
  if(d.kick){await post(`/api/rooms/${r.id}/kick`,{botId:d.kick})}
  if(d.call){callOpen=d.call}
  if(d.cancel!==undefined){callOpen=null}
@@ -412,6 +432,9 @@ $('input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.is
 $('input').addEventListener('input',e=>{const t=e.target;t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px'});
 $('log').addEventListener('input',e=>{const c=e.target.closest('.paycard');if(c&&e.target.matches('[data-amtin]'))c.querySelectorAll('[data-amt]').forEach(b=>b.setAttribute('aria-pressed','false'))});
 $('log').addEventListener('click',async e=>{
+ const br=e.target.closest('.botreq');
+ if(br){const t=e.target.closest('button');if(!t)return;const ok=t.hasAttribute('data-bok');if(!ok&&!t.hasAttribute('data-bno'))return;if(!ok&&t.textContent!=='정말 거절할까요?'){t.textContent='정말 거절할까요?';return}
+  t.disabled=true;const j=await api('/api/bots/review',{botId:br.dataset.bot,msgId:br.dataset.botreq,approve:ok});if(j.error){br.querySelector('[data-err]').textContent=j.error;t.disabled=false}return}
  const jc=e.target.closest('.joincard');
  if(jc){const t=e.target.closest('button');if(!t)return;const ok=t.hasAttribute('data-joinok');if(!ok&&!t.hasAttribute('data-joinno'))return;
   if(!ok&&t.textContent!=='정말 거절할까요?'){t.textContent='정말 거절할까요?';return}
@@ -455,6 +478,39 @@ $('log').addEventListener('click',async e=>{
  if(t.hasAttribute('data-pub')){t.disabled=true;t.textContent='게시하고 확인하는 중…';const j=await api('/api/site/publish',{versionId:c.dataset.sitev,slug:c.querySelector('[data-slug]').value.trim(),roomId:room().id});if(j.error||!j.ok){err.textContent=j.error||'게시 후 확인에 실패했어요.';t.disabled=false;t.textContent='이 버전 게시하기'}return}
  if(t.hasAttribute('data-unpub')){if(t.textContent!=='정말 내릴까요?'){t.textContent='정말 내릴까요?';return}const j=await api('/api/site/unpublish',{});if(j.error)err.textContent=j.error;else load();return}
 },true);
+
+/* ===== 봇 마켓 ===== */
+let MK=null, mkDraft=null, mkTarget=null;
+const ST={pending:'공개 심사 중',public:'다른 기업에 공개 중',rejected:'공개 거절됨'};
+async function openMarket(){MK=await api('/api/bots/mine');mkDraft=null;mkTarget=null;renderMarket();open('mkVeil')}
+function renderMarket(){
+ const tgt=mkTarget&&MK.bots.find(b=>b.id===mkTarget);
+ const prev=mkDraft?`<div class="mkprev"><b>${esc(mkDraft.def.name)} · ${esc(MK.kinds[mkDraft.def.kind])}${mkDraft.def.ppt?' + PPT':''}</b><div class="note" style="padding:0">${esc(mkDraft.def.desc)}</div>${mkDraft.def.quick.length?`<div class="note" style="padding:0">빠른 요청: ${mkDraft.def.quick.map(esc).join(' · ')}</div>`:''}<pre>${esc(mkDraft.def.role)}</pre><div class="acts"><button class="btn" type="button" id="mkSubmit">${tgt?`"${esc(tgt.def?tgt.def.name:'')}" 업데이트로 `:''}기업방에 승인 요청</button><button class="btn ghost" type="button" id="mkReset">다시 고르기</button></div></div>`:'';
+ const list=MK.bots.map(b=>{const d=b.def||(b.pending&&b.pending.def)||{},pr=b.pricing||{};return `<div class="mkbot"><b>${esc(d.name||'')}</b> <span class="st">${b.def?`버전 ${b.version}`:'기업방 승인 대기'}${b.pending&&b.def?' · 업데이트 승인 대기':''}</span>${b.publicStatus?` <span class="st">${ST[b.publicStatus]}</span>`:''}
+  <div class="note" style="padding:0">${esc(d.desc||'')}${b.publicReason?` · 사유: ${esc(b.publicReason)}`:''}</div>
+  <div class="note" style="padding:0">쓰인 횟수 ${b.stats.uses} · 다른 기업에게 받은 토큰 ${b.stats.earned}${b.passes?` · 이용권 쓰는 기업 ${b.passes}곳`:''}</div>
+  ${b.def?`<div class="inl"><span>다른 기업이 쓸 때 →</span> 요청당 <input class="field" type="number" min="0" data-pu value="${pr.perUse??''}" placeholder="없음" aria-label="요청당 토큰">토큰 · 이용권 <input class="field" type="number" min="1" data-pd value="${pr.passDays??''}" placeholder="일" aria-label="이용권 기간(일)">일 <input class="field" type="number" min="1" data-pp value="${pr.passPrice??''}" placeholder="토큰" aria-label="이용권 토큰">토큰 <button class="btn ghost" type="button" data-price="${b.id}">저장</button></div>`:''}
+  <div class="acts"><button class="btn ghost" type="button" data-upd="${b.id}">업데이트 올리기</button>${b.def&&b.publicStatus!=='public'&&b.publicStatus!=='pending'?`<button class="btn ghost" type="button" data-pub="${b.id}">다른 기업에 공개 요청</button>`:''}${b.publicStatus==='public'||b.publicStatus==='pending'?`<button class="btn ghost" type="button" data-unpub="${b.id}">공개 중단</button>`:''}<button class="btn ghost" type="button" data-del="${b.id}">삭제</button></div><div class="payerr" data-err></div></div>`}).join('');
+ $('mkMain').innerHTML=`<h4 class="dirh">1. Claude로 봇 만들기</h4><p class="note" style="padding:0">아래 안내문 끝에 만들고 싶은 봇을 적어 Claude에게 보내세요. Claude가 봇 정의를 담은 아티팩트를 만들어 줘요. 아티팩트를 "공개"로 공유하고 링크를 아래에 넣으세요.</p><div class="acts"><button class="btn ghost" type="button" id="mkCopy">Claude 안내문 복사</button></div>
+ <h4 class="dirh">2. ${tgt?`"${esc(tgt.def?tgt.def.name:'')}" 업데이트 올리기 <button class="btn ghost" type="button" id="mkNoTarget">새 봇으로</button>`:'봇 올리기'}</h4>
+ <div class="inl" style="display:flex;gap:6px;flex-wrap:wrap"><input class="field" id="mkUrl" placeholder="https:// 공개 링크 (Claude 아티팩트, GitHub 등)" style="flex:1 1 260px"><button class="btn" type="button" id="mkFetch">링크 읽기</button></div>
+ <details style="margin-top:8px"><summary style="cursor:pointer;min-height:40px">링크가 안 읽히면 정의(JSON)를 붙여넣기</summary><textarea class="field" id="mkText" placeholder='{"hamkkebot":1, "name": …}'></textarea><div class="acts"><button class="btn ghost" type="button" id="mkParse">붙여넣은 정의 확인</button></div></details>
+ <div class="docerr" id="mkErr"></div>${prev}
+ <h4 class="dirh">3. 우리 기업이 만든 봇</h4>${list||'<p class="note" style="padding:0">아직 없어요.</p>'}`;
+}
+$('mkVeil').addEventListener('click',async e=>{
+ const t=e.target.closest('button');if(!t)return;const d=t.dataset,box=t.closest('.mkbot'),er=x=>{const el=box?box.querySelector('[data-err]'):$('mkErr');el.textContent=x||''};
+ if(t.id==='mkCopy'){try{await navigator.clipboard.writeText(MK.prompt);t.textContent='복사했어요'}catch(err){t.textContent='복사 안 됨'}return}
+ if(t.id==='mkFetch'){t.disabled=true;t.textContent='읽는 중…';const j=await api('/api/bots/fetch',{url:$('mkUrl').value.trim()});t.disabled=false;t.textContent='링크 읽기';if(j.error)return er(j.error);mkDraft=j;return renderMarket()}
+ if(t.id==='mkParse'){const j=await api('/api/bots/parse',{text:$('mkText').value});if(j.error)return er(j.error);mkDraft=j;return renderMarket()}
+ if(t.id==='mkReset'){mkDraft=null;return renderMarket()}
+ if(t.id==='mkNoTarget'){mkTarget=null;return renderMarket()}
+ if(t.id==='mkSubmit'){t.disabled=true;const j=await api('/api/bots/submit',{def:mkDraft.def,sourceUrl:mkDraft.sourceUrl||'',roomId:room().id,botId:mkTarget||undefined});if(j.error){t.disabled=false;return er(j.error)}close(t);return}
+ if(d.upd){mkTarget=d.upd;mkDraft=null;renderMarket();$('mkUrl').focus();return}
+ if(d.price){const j=await api('/api/bots/pricing',{botId:d.price,perUse:box.querySelector('[data-pu]').value,passDays:box.querySelector('[data-pd]').value,passPrice:box.querySelector('[data-pp]').value});if(j.error)return er(j.error);MK=await api('/api/bots/mine');return renderMarket()}
+ if(d.pub){const j=await api('/api/bots/publish',{botId:d.pub});if(j.error)return er(j.error);MK=await api('/api/bots/mine');return renderMarket()}
+ if(d.unpub||d.del){if(t.textContent.indexOf('정말')<0){t.textContent='정말 '+t.textContent+'?';return}await api(d.del?'/api/bots/delete':'/api/bots/unpublish',{botId:d.unpub||d.del});MK=await api('/api/bots/mine');return renderMarket()}
+});
 
 /* ===== IR 자료 ===== */
 let IR=null, irTab='slides', irView=null, irForce=false;
