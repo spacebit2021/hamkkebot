@@ -73,7 +73,7 @@ const D = (name, r) => ({ hamkkebot: 1, name, short: name[0], color: '#2D6A4F', 
 
   // 인재 추천 보상 10 → 9
   await Ad('/api/admin/fee', { pct: 10 });
-  await U.A(`/api/rooms/${room.A}/invite`, { botId: 'talent' });
+  await U.A(`/api/rooms/${room.A}/invite`, { botId: 'talent' }); await U.B(`/api/rooms/${room.B}/invite`, { botId: 'talent' });
   await U.A(`/api/rooms/${room.A}/messages`, { text: '박지은 추천', to: 'talent' }); await sl(120);
   const tid = (await msgs('A')).filter(m => m.talent).pop().talent.id;
   const ln = await U.A('/api/talent/consent-link', { id: tid }); await page(ln.j.consentUrl, 'agree');

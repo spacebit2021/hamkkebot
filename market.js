@@ -81,6 +81,7 @@ function validateDef(o) {
     kind: KINDS[o.kind] ? o.kind : 'chat', ppt: o.kind === 'chat' || !o.kind ? !!o.ppt : false,
     role: String(o.role == null ? '' : o.role).replace(/\r/g, '').trim().slice(0, 4000)
   };
+  if (o.board != null) { const bv = validateBoard(o.board); if (bv.error) return { error: '게시판(board): ' + bv.error }; def.board = bv.board; }
   const errs = [];
   if (!def.name) errs.push('name(봇 이름)이 없어요');
   if (def.role.length < 20) errs.push('role(봇 역할 지시문)이 너무 짧아요 (20자 이상)');
@@ -107,7 +108,7 @@ function overlap(newRole, origRole, ignore) {
 // ----- 내보내기: 다시 올릴 수 있는 HTML 한 장 (Claude 아티팩트와 같은 형식) -----
 const escH = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 function exportDef(def, meta) {
-  return { hamkkebot: 1, name: def.name, short: def.short, color: def.color, tag: def.tag, desc: def.desc, hello: def.hello, quick: def.quick || [], kind: def.kind || 'chat', ppt: !!def.ppt, role: def.role, exported: meta };
+  return { hamkkebot: 1, name: def.name, short: def.short, color: def.color, tag: def.tag, desc: def.desc, hello: def.hello, quick: def.quick || [], kind: def.kind || 'chat', ppt: !!def.ppt, role: def.role, ...(def.board ? { board: def.board } : {}), exported: meta };
 }
 function exportHtml(def, meta) {
   const o = exportDef(def, meta), pretty = JSON.stringify(o, null, 2);
@@ -136,6 +137,35 @@ pre{white-space:pre-wrap;word-break:break-word;background:#f6f8fa;border-radius:
 // 올린 정의의 내보내기 정보 (보여 주기만 함)
 const readMeta = o => o && o.exported && typeof o.exported === 'object' ? { from: s(o.exported.from, 40), version: s(o.exported.version, 10), at: s(o.exported.at, 20), source: s(o.exported.source, 10) } : null;
 
+// ----- 봇 게시판 정의: 이 봇을 초대한 기업에 생기는 게시판 -----
+const FIELD_TYPES = { text: '한 줄', textarea: '여러 줄', date: '날짜', number: '숫자', select: '고르기', url: '링크' };
+const VIS = { shared: '이 봇을 쓰는 모든 기업', own: '우리 기업 안에서만', secret: '쓴 기업과 운영 기관만' };
+function validateBoard(b) {
+  if (!b || typeof b !== 'object') return { error: '형식이 맞지 않아요' };
+  const board = { name: s(b.name, 20), desc: s(b.desc, 200), visibility: VIS[b.visibility] ? b.visibility : 'shared', fields: [], action: null, consent: false, consentText: '' };
+  if (!board.name) return { error: 'name(게시판 이름)이 없어요' };
+  const keys = new Set();
+  for (const f of (Array.isArray(b.fields) ? b.fields : []).slice(0, 10)) {
+    const key = String(f && f.key || '').trim();
+    if (!/^[a-z][a-z0-9_]{0,19}$/.test(key) || keys.has(key)) return { error: `fields의 key는 영문 소문자로 시작하는 서로 다른 이름이어야 해요 ("${key}")` };
+    keys.add(key);
+    const type = FIELD_TYPES[f.type] ? f.type : 'text';
+    const fd = { key, label: s(f.label, 20) || key, type, required: !!f.required, private: !!f.private, hint: s(f.hint, 60) };
+    if (type === 'select') { fd.options = (Array.isArray(f.options) ? f.options : []).map(x => s(x, 30)).filter(Boolean).slice(0, 10); if (fd.options.length < 2) return { error: `"${fd.label}" 고르기 항목은 선택지가 2개 이상 필요해요` }; }
+    board.fields.push(fd);
+  }
+  if (!board.fields.length) return { error: 'fields(글 항목)가 1개 이상 필요해요' };
+  if (!board.fields.some(f => !f.private)) return { error: '다른 기업에 보일 항목(private가 아닌 것)이 1개 이상 필요해요' };
+  if (b.action && board.visibility === 'shared') {
+    const price = Number(b.action.price == null ? 0 : b.action.price);
+    if (!Number.isInteger(price) || price < 0 || price > 1000) return { error: 'action.price는 0~1000 사이 정수예요' };
+    board.action = { label: s(b.action.label, 12) || '신청하기', price };
+  }
+  board.consent = !!b.consent && board.fields.some(f => f.private);
+  if (board.consent) board.consentText = s(b.consentText, 200);
+  return { board };
+}
+
 // 직원이 Claude에게 붙여 넣어 쓰는 안내문 (Claude가 정의를 만들어 아티팩트로 공개하게)
 const CLAUDE_PROMPT = `함께봇(사회적기업용 전문가 봇 플랫폼)에 올릴 봇을 만들고 싶어요. 아래 형식의 JSON 하나로 봇 정의를 만들어 주세요.
 만든 뒤에는 그 JSON을 화면에 보여 주는 HTML 페이지(아티팩트)로 만들고, 페이지 안에 <script type="application/json" id="hamkkebot-bot">정의 JSON</script> 를 꼭 넣어 주세요.
@@ -151,13 +181,30 @@ const CLAUDE_PROMPT = `함께봇(사회적기업용 전문가 봇 플랫폼)에 
   "quick": ["빠른 요청 버튼 1", "버튼 2", "버튼 3"],
   "kind": "chat",
   "ppt": false,
-  "role": "봇의 역할 지시문 (4000자 이내). 누구를 위해 무엇을 어떻게 하는지, 지켜야 할 규칙"
+  "role": "봇의 역할 지시문 (4000자 이내). 누구를 위해 무엇을 어떻게 하는지, 지켜야 할 규칙",
+  "board": {
+    "name": "게시판 이름 (20자 이내, 게시판이 필요 없으면 board를 빼세요)",
+    "desc": "어떤 글을 올리는 곳인지",
+    "visibility": "shared",
+    "fields": [
+      { "key": "title", "label": "제목", "type": "text", "required": true },
+      { "key": "detail", "label": "내용", "type": "textarea" },
+      { "key": "contact", "label": "연락처", "type": "text", "private": true }
+    ],
+    "action": { "label": "신청하기", "price": 0 },
+    "consent": false
+  }
 }
 
 - kind: chat(글로 답함) · site(랜딩페이지 제작) · ir(IR 자료) · sched(일정 관리) · todo(개인 할 일·2주 점검) 중 하나
 - ppt: chat 봇이 "PPT 만들어 줘" 요청에 발표자료(.pptx)도 만들게 하려면 true
+- board(선택): 이 봇을 초대한 기업에만 생기는 게시판이에요.
+  · visibility: shared(이 봇을 쓰는 모든 기업이 봄) · own(우리 기업 안에서만) · secret(쓴 기업과 운영 기관만)
+  · fields type: text · textarea · date · number · select(options 필요) · url. private: true인 항목은 쓴 기업과, action을 한 기업에만 보여요.
+  · action(shared일 때만): 다른 기업이 누르는 버튼과 토큰(price). 토큰은 글 쓴 기업이 받아요 (운영 기관 몫 제외).
+  · consent: 사람의 개인정보(이름·연락처)가 들어가면 true. 그 사람이 동의 링크에서 직접 동의해야 글이 올라가요.
 - role에는 사실만 쓰고 수치·인증·후기를 지어내지 말라는 규칙을 넣어 주세요.
 
 제가 만들고 싶은 봇: `;
 
-module.exports = { overlap, grams, exportHtml, exportDef, readMeta, checkUrl, fetchPublic, extractDef, validateDef, privateIp, KINDS, CLAUDE_PROMPT };
+module.exports = { validateBoard, FIELD_TYPES, VIS, overlap, grams, exportHtml, exportDef, readMeta, checkUrl, fetchPublic, extractDef, validateDef, privateIp, KINDS, CLAUDE_PROMPT };

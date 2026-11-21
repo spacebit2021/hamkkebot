@@ -32,6 +32,8 @@ const page = (u, action) => new Promise(r => { const q = http.request('http://lo
   const W = async k => (await U[k]('/api/state')).j.wallet, msgs = async k => (await U[k]('/api/state')).j.rooms[0].msgs;
   const list = async k => (await U[k]('/api/talent')).j;
   await U.A(`/api/rooms/${room.A}/invite`, { botId: 'talent' });
+  chk('인재추천 봇을 초대하지 않은 기업엔 인재 추천 탭 없음', !(await U.B('/api/state')).j.talentTab && (await U.A('/api/state')).j.talentTab);
+  await U.B(`/api/rooms/${room.B}/invite`, { botId: 'talent' }); await U.C(`/api/rooms/${room.C}/invite`, { botId: 'talent' });
 
   chk('주민번호가 들어간 추천은 AI에 보내지도 않음', await (async () => { const n = calls.length; await U.A(`/api/rooms/${room.A}/messages`, { text: '박지은 900101-2345678 추천', to: 'talent' }); await sl(120); return calls.length === n && (await msgs('A')).pop().text.includes('주민등록번호'); })());
   await U.A(`/api/rooms/${room.A}/messages`, { text: '좋은 사람 있어요', to: 'talent' }); await sl(120);

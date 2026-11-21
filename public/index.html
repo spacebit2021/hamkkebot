@@ -269,7 +269,7 @@ textarea.field{min-height:80px;resize:vertical}
 <div class="veil docveil" id="boardVeil" role="dialog" aria-modal="true" aria-labelledby="boardTitle">
  <div class="sheet docsheet">
   <div class="dochead"><div><h3 id="boardTitle">게시판</h3><div class="note" style="padding:0" id="boardLead"></div></div><button class="btn ghost" type="button" data-close>닫기</button></div>
-  <div class="doctabs" id="boardTabs"><button type="button" data-btab="qna">Q&amp;A</button><button type="button" data-btab="rec">봇 추천</button><button type="button" data-btab="talent">인재 추천</button></div>
+  <div class="doctabs" id="boardTabs"></div>
   <div id="boardMain" style="overflow:auto"></div>
  </div>
 </div>
@@ -359,7 +359,7 @@ function renderTop(){
 function msgHTML(m,i){
  if(m.from==='sys'&&m.botReq){const q=m.botReq,dd=q.def,head=`<div class="msg sys">${esc(m.text)}</div>`;
   if(q.status)return head+`<div class="msg sys">${q.status==='approved'?'승인했어요':'승인하지 않았어요'}</div>`;
-  return head+`<div class="paycard botreq" data-botreq="${m.id}" data-bot="${q.botId}"><b>${esc(dd.name)} ${q.kind==='update'?'업데이트':'새 봇'} · ${esc(({chat:'글 답변',site:'홈페이지',ir:'IR',sched:'일정',todo:'할 일'})[dd.kind]||dd.kind)}${dd.ppt?' + PPT':''}</b><div class="paycalc">${esc(dd.desc)}</div>${q.origin?`<div class="payerr" style="display:block">다른 기업이 먼저 만든 봇을 복사한 것으로 보여요: ${owTxt(q.origin)}</div>`:''}${dd.quick.length?`<div class="paycalc">빠른 요청: ${dd.quick.map(esc).join(' · ')}</div>`:''}<details class="prof"><summary>역할 지시문 보기</summary><p style="white-space:pre-wrap">${esc(dd.role)}</p></details>${q.sourceUrl?`<div class="paycalc">출처: ${esc(q.sourceUrl)}</div>`:''}<div class="acts"><button class="btn" type="button" data-bok>승인</button><button class="btn ghost" type="button" data-bno>거절</button></div><div class="payerr" data-err></div></div>`}
+  return head+`<div class="paycard botreq" data-botreq="${m.id}" data-bot="${q.botId}"><b>${esc(dd.name)} ${q.kind==='update'?'업데이트':'새 봇'} · ${esc(({chat:'글 답변',site:'홈페이지',ir:'IR',sched:'일정',todo:'할 일'})[dd.kind]||dd.kind)}${dd.ppt?' + PPT':''}</b><div class="paycalc">${esc(dd.desc)}</div>${q.origin?`<div class="payerr" style="display:block">다른 기업이 먼저 만든 봇을 복사한 것으로 보여요: ${owTxt(q.origin)}</div>`:''}${dd.quick.length?`<div class="paycalc">빠른 요청: ${dd.quick.map(esc).join(' · ')}</div>`:''}${dd.board?boardSummary(dd.board):''}<details class="prof"><summary>역할 지시문 보기</summary><p style="white-space:pre-wrap">${esc(dd.role)}</p></details>${q.sourceUrl?`<div class="paycalc">출처: ${esc(q.sourceUrl)}</div>`:''}<div class="acts"><button class="btn" type="button" data-bok>승인</button><button class="btn ghost" type="button" data-bno>거절</button></div><div class="payerr" data-err></div></div>`}
  if(m.from==='sys'&&m.join){const j=m.join,head=`<div class="msg sys">${esc(m.text)}</div>`;
   if(j.status)return head+`<div class="msg sys">${j.status==='approved'?'참여를 승인했어요':'참여 요청을 거절했어요'}</div>`;
   const mins=j.rate?Math.floor(S.wallet/j.rate*60):0, low=S.wallet<j.rate;
@@ -394,7 +394,7 @@ function renderBots(){
  $('dirLead').textContent=reviewMsg?'초안을 검토받을 사람 전문가를 골라 주세요.':'AI 봇은 바로 답하고, 사람 전문가는 텔레그램으로 호출돼 답장합니다.';
  const card=b=>{
   const inRoom=r.bots.includes(b.id);
-  return `<div class="bot ${b.soon?'soon':''}"><header>${av(b)}<div><b>${esc(b.name)}</b><div class="tag">${esc(b.tag)}${b.soon?'':' · 텔레그램 /'+esc(b.id)}</div>${b.rec?`<div class="tag"><span class="stars">★</span> ${b.rec.avg} · 추천 ${b.rec.n}${b.rec.likes?` · 공감 ${b.rec.likes}`:''}</div>`:''}${b.origin&&b.origin.royalty?`<div class="tag mk">원작 ${esc(b.origin.orgName)} · 요청당 원작 몫 ${b.origin.royalty}토큰 포함</div>`:''}${b.custom?`<div class="tag mk">${b.mine?'우리 기업이 만든 봇':`${esc(b.ownerName)} 제작${b.pricing.perUse?` · 요청당 +${b.pricing.perUse}토큰`:b.pricing.perUse===0?' · 추가 토큰 없음':''}${b.pricing.passPrice!=null?` · ${b.pricing.passDays}일 이용권 ${b.pricing.passPrice}토큰`:''}${b.passUntil?` · 이용권 ${new Date(b.passUntil).toLocaleDateString('ko-KR')}까지`:''}`}</div>`:''}</div>${b.soon?'':`<div class="rate"><b>${b.cost}</b><span>${b.cost?'토큰/요청':'무료'}</span></div>`}</header><p>${esc(b.desc)}</p>${b.custom&&!b.mine&&b.pricing.passPrice!=null&&!b.passUntil?`<button class="btn ghost" type="button" data-pass="${b.id}">${b.pricing.passDays}일 이용권 사기 (${b.pricing.passPrice}토큰)</button>`:''}${b.soon?'<span class="soonchip">준비 중</span>':inRoom?'<button class="btn ghost" data-kick="'+b.id+'">내보내기</button>':'<button class="btn" data-invite="'+b.id+'">초대하기</button>'}</div>`};
+  return `<div class="bot ${b.soon?'soon':''}"><header>${av(b)}<div><b>${esc(b.name)}</b><div class="tag">${esc(b.tag)}${b.soon?'':' · 텔레그램 /'+esc(b.id)}</div>${b.board?`<div class="tag mk">게시판: ${esc(b.board.name)}${b.board.action&&b.board.action.price?` · 「${esc(b.board.action.label)}」 ${b.board.action.price}토큰`:''}</div>`:''}${b.rec?`<div class="tag"><span class="stars">★</span> ${b.rec.avg} · 추천 ${b.rec.n}${b.rec.likes?` · 공감 ${b.rec.likes}`:''}</div>`:''}${b.origin&&b.origin.royalty?`<div class="tag mk">원작 ${esc(b.origin.orgName)} · 요청당 원작 몫 ${b.origin.royalty}토큰 포함</div>`:''}${b.custom?`<div class="tag mk">${b.mine?'우리 기업이 만든 봇':`${esc(b.ownerName)} 제작${b.pricing.perUse?` · 요청당 +${b.pricing.perUse}토큰`:b.pricing.perUse===0?' · 추가 토큰 없음':''}${b.pricing.passPrice!=null?` · ${b.pricing.passDays}일 이용권 ${b.pricing.passPrice}토큰`:''}${b.passUntil?` · 이용권 ${new Date(b.passUntil).toLocaleDateString('ko-KR')}까지`:''}`}</div>`:''}</div>${b.soon?'':`<div class="rate"><b>${b.cost}</b><span>${b.cost?'토큰/요청':'무료'}</span></div>`}</header><p>${esc(b.desc)}</p>${b.custom&&!b.mine&&b.pricing.passPrice!=null&&!b.passUntil?`<button class="btn ghost" type="button" data-pass="${b.id}">${b.pricing.passDays}일 이용권 사기 (${b.pricing.passPrice}토큰)</button>`:''}${b.soon?'<span class="soonchip">준비 중</span>':inRoom?'<button class="btn ghost" data-kick="'+b.id+'">내보내기</button>':'<button class="btn" data-invite="'+b.id+'">초대하기</button>'}</div>`};
  const affordable=x=>x.rate?Math.floor(S.wallet/x.rate*60):0;
  const fmtMin=m=>m>=60?`${Math.floor(m/60)}시간${m%60?' '+m%60+'분':''}`:`${m}분`;
  let list=(S.experts||[]).filter(x=>!xq||(x.name+x.field+(x.desc||'')+(x.career||'')).toLowerCase().includes(xq.toLowerCase()));
@@ -498,6 +498,7 @@ es=new EventSource('/api/events');
 es.onerror=()=>{if(es&&es.readyState===2){es=null;load().catch(()=>{})}};
 es.addEventListener('room',e=>{const d=JSON.parse(e.data);if(d.roomId)delete typing[d.roomId];clearTimeout(t);t=setTimeout(async()=>{const wasTg=room()&&room().tgChatId;await load();if($('tgVeil').classList.contains('open')&&!wasTg&&room().tgChatId)renderTg()},120)});
 es.addEventListener('typing',e=>{const d=JSON.parse(e.data);typing[d.roomId]=d.botId;if(room()&&room().id===d.roomId)renderLog()});
+es.addEventListener('fee',async()=>{await load().catch(()=>{});if($('mkVeil').classList.contains('open')&&MK)renderMarket();if($('boardVeil').classList.contains('open'))boardRefresh()});
 es.addEventListener('board',e=>{let d={};try{d=JSON.parse(e.data)}catch(err){}if(d.answer){if(!$('askPanel').hidden)askLoad();else $('askDot').hidden=false}if($('boardVeil').classList.contains('open'))boardRefresh();clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),300)});
 es.addEventListener('todo',()=>{clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),150)});
 es.addEventListener('sched',()=>{clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),150)});
@@ -518,6 +519,7 @@ $('log').addEventListener('click',async e=>{
 },true);
 
 $('todoReset').addEventListener('click',async e=>{const b=e.currentTarget;if(b.textContent!=='정말 바꿀까요?'){b.textContent='정말 바꿀까요?';return}b.disabled=true;await api('/api/todo/token',{});b.disabled=false;b.textContent='링크 새로 만들기';load().catch(()=>{})});
+const boardSummary=bd=>`<div class="note" style="padding:0"><b>게시판 「${esc(bd.name)}」</b> · ${esc(VISL[bd.visibility])} · 항목: ${bd.fields.map(f=>esc(f.label)+(f.private?'(비공개)':'')).join(', ')}${bd.action?` · 버튼 「${esc(bd.action.label)}」${bd.action.price?` ${bd.action.price}토큰`:''}`:''}${bd.consent?' · 당사자 동의 필요':''}</div>`;
 /* ===== 질문 버튼 ===== */
 async function askLoad(){const j=await api('/api/ask');$('askNote').textContent=j.live?'관리자 텔레그램으로 바로 전달돼요':'관리자에게 전달돼요 (답은 여기와 기업방에 와요)';
  $('askList').innerHTML=j.items.length?j.items.map(q=>`<div class="askq">${esc(q.body)}<div class="askmeta" style="color:inherit;opacity:.8">#${q.n} · ${when(q.at)}${q.secret?' · 비밀글':''}</div></div>${q.answers.map(a=>`<div class="aska"><b>운영 기관</b>\n${esc(a.body)}<div class="askmeta">${when(a.at)}</div></div>`).join('')||'<div class="askmeta" style="align-self:flex-end">답변을 기다리고 있어요</div>'}`).join(''):'<p class="note" style="padding:0">함께봇 사용법, 토큰, 지원사업 등 무엇이든 물어보세요. 답변은 Q&amp;A 게시판에도 남아요.</p>';
@@ -554,8 +556,34 @@ let BD={tab:'qna',view:'list',id:null,data:null,post:null,write:null};
 const stars=n=>'★'.repeat(n)+'☆'.repeat(5-n);
 const when=t=>new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
 async function openBoard(tab){BD={tab:tab||BD.tab,view:'list',id:null,data:null,post:null,write:null};open('boardVeil');await boardRefresh()}
-async function boardRefresh(){BD.data=BD.tab==='talent'?await api('/api/talent'):await api('/api/board?board='+BD.tab);if(BD.view==='post'&&BD.id){const j=await api('/api/board/post?id='+BD.id);if(j.error){BD.view='list'}else BD.post=j}renderBoard()}
+function boardTabsHtml(){const T=[['qna','Q&A'],['rec','봇 추천'],...(S.talentTab?[['talent','인재 추천']]:[]),...(S.boardTabs||[]).map(b=>['bot:'+b.botId,b.name])];
+ if(!T.some(x=>x[0]===BD.tab))BD.tab='qna';
+ $('boardTabs').innerHTML=T.map(([k,n])=>`<button type="button" data-btab="${esc(k)}" aria-pressed="${k===BD.tab}">${esc(n)}</button>`).join('')}
+async function boardRefresh(){boardTabsHtml();BD.data=BD.tab==='talent'?await api('/api/talent'):BD.tab.startsWith('bot:')?await api('/api/bboard?bot='+encodeURIComponent(BD.tab.slice(4))):await api('/api/board?board='+BD.tab);if(BD.view==='post'&&BD.id){const j=await api('/api/board/post?id='+BD.id);if(j.error){BD.view='list'}else BD.post=j}renderBoard()}
+const VISL={shared:'이 봇을 쓰는 모든 기업이 봐요',own:'우리 기업 안에서만 봐요',secret:'우리 기업과 운영 기관만 봐요'};
+function fieldInput(f,v){const a=`data-bf="${esc(f.key)}" aria-label="${esc(f.label)}"`,val=esc(v||''),ph=esc(f.hint||'');
+ if(f.type==='textarea')return `<textarea class="field" ${a} maxlength="2000" placeholder="${ph}" style="min-height:90px">${val}</textarea>`;
+ if(f.type==='select')return `<select class="field" ${a}><option value="">고르세요</option>${f.options.map(o=>`<option${o===v?' selected':''}>${esc(o)}</option>`).join('')}</select>`;
+ return `<input class="field" ${a} type="${f.type==='date'?'date':f.type==='number'?'number':f.type==='url'?'url':'text'}" maxlength="200" placeholder="${ph}" value="${val}">`}
+function renderBotBoard(){const D=BD.data||{},bd=D.board,M=$('boardMain');
+ if(!bd){M.innerHTML=`<p class="docerr" style="padding:0">${esc(D.error||'게시판을 불러오지 못했어요')}</p>`;return}
+ $('boardLead').textContent=`${D.botName}의 게시판 · ${VISL[bd.visibility]}${bd.desc?' · '+bd.desc:''}`;
+ if(BD.view==='write'){const w=BD.write||{};
+  M.innerHTML=`<button class="btn ghost" type="button" data-bback>← 목록</button><h3 style="margin:12px 0">「${esc(bd.name)}」 글쓰기</h3>
+  ${bd.fields.map(f=>`<label class="note" style="padding:6px 0 0;display:block">${esc(f.label)}${f.required?' *':''}${f.private?` <span class="chip lock">${bd.action?`「${esc(bd.action.label)}」 한 기업에만`:'우리 기업만'}</span>`:''}${fieldInput(f,w[f.key])}</label>`).join('')}
+  ${bd.consent?'<p class="note" style="padding:8px 0 0">개인정보가 들어가면 올린 뒤 동의 링크를 당사자에게 보내 주세요. 당사자가 직접 동의해야 게시판에 보여요.</p>':''}
+  <div class="acts"><button class="btn" type="button" id="bbPost">올리기</button></div><div class="docerr" id="bErr"></div>`;return}
+ const card=p=>{const pub=bd.fields.filter(f=>!f.private&&p.values[f.key]),priv=bd.fields.filter(f=>f.private&&p.values[f.key]);
+  return `<div class="tcard" data-bpid="${p.id}" style="border-color:var(--line)">${pub.map((f,i)=>i===0?`<b>${esc(p.values[f.key])}</b>`:`<div style="font-size:14px;white-space:pre-wrap"><span class="note" style="padding:0">${esc(f.label)}</span> ${esc(p.values[f.key])}</div>`).join('')}
+  ${priv.length?`<div class="priv">${priv.map(f=>`<div><span class="note" style="padding:0">${esc(f.label)}</span> ${esc(p.values[f.key])}</div>`).join('')}</div>`:''}
+  <div class="note" style="padding:0;margin-top:6px">${esc(p.orgName)}${p.mine?' (우리)':''} · ${when(p.at)}${bd.action?` · ${esc(bd.action.label)} ${p.actions}`:''}${p.status==='closed'?' · 마감':''}${p.status==='awaiting'?' · <b>당사자 동의 대기</b>':''}${p.hidden?' · 운영 기관이 숨김':''}</div>
+  ${p.mine&&p.consentUrl?`<div class="priv">당사자에게 보낼 동의 링크 (7일): <input class="field" readonly value="${esc(absUrl(p.consentUrl))}" style="margin-top:4px" aria-label="동의 링크"></div>`:''}
+  ${p.mine?`${bd.action&&bd.action.price?`<div class="note" style="padding:0">받은 토큰 ${p.earned}${p.actedBy.length?` · ${p.actedBy.map(esc).join(', ')}`:''}</div>`:p.actedBy&&p.actedBy.length?`<div class="note" style="padding:0">${esc(bd.action?bd.action.label:'')}: ${p.actedBy.map(esc).join(', ')}</div>`:''}<div class="acts">${p.status==='open'?'<button class="btn ghost" type="button" data-bpclose>마감</button>':''}<button class="btn ghost" type="button" data-bpdel>지우기</button></div>`
+   :bd.action&&!p.acted&&p.status==='open'?`<div class="acts"><button class="btn" type="button" data-bpact>${esc(bd.action.label)}${bd.action.price?` (${bd.action.price}토큰)`:''}</button></div>`:p.acted?`<div class="note" style="padding:0">우리 기업이 「${esc(bd.action.label)}」을(를) 했어요</div>`:''}<div class="payerr" data-err></div></div>`};
+ M.innerHTML=`<div class="acts" style="margin:4px 0 10px"><button class="btn" type="button" id="bWrite">글쓰기</button>${bd.action&&bd.action.price?`<span class="note" style="padding:0;align-self:center">「${esc(bd.action.label)}」 ${bd.action.price}토큰은 글 쓴 기업이 받아요 (운영 기관 몫 ${D.feePct}% 제외)</span>`:''}</div>${(D.posts||[]).map(card).join('')||'<p class="note" style="padding:0">아직 글이 없어요.</p>'}`;
+}
 function renderBoard(){
+ if(BD.tab.startsWith('bot:')){document.querySelectorAll('[data-btab]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.btab===BD.tab));return renderBotBoard()}
  document.querySelectorAll('[data-btab]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.btab===BD.tab));
  if(BD.tab==='talent'){$('boardLead').textContent='다른 기업이 추천한 인재예요. 고르면 이름·연락처를 받고, 추천한 기업이 토큰을 받아요. 인재 추천은 기업방에서 인재추천 봇에게 하세요.';
   const T=BD.data||{items:[]};
@@ -594,6 +622,12 @@ function renderBoard(){
 }
 $('boardBtn').onclick=()=>openBoard();
 $('boardVeil').addEventListener('click',async e=>{const t=e.target.closest('button');if(!t)return;const d=t.dataset,err=x=>{const el=$('bErr');if(el)el.textContent=x||''};
+ const bp=t.closest('[data-bpid]');
+ if(bp){const id=bp.dataset.bpid,be=x=>bp.querySelector('[data-err]').textContent=x||'';
+  if(t.hasAttribute('data-bpact')){if(t.textContent.indexOf('정말')<0){t.textContent='정말 '+t.textContent+'?';return}t.disabled=true;const j=await api('/api/bboard/action',{id});if(j.error){t.disabled=false;return be(j.error)}return boardRefresh()}
+  if(t.hasAttribute('data-bpclose')||t.hasAttribute('data-bpdel')){if(t.textContent.indexOf('정말')<0){t.textContent='정말 '+t.textContent+'?';return}const j=await api(t.hasAttribute('data-bpdel')?'/api/bboard/delete':'/api/bboard/close',{id});if(j.error)return be(j.error);return boardRefresh()}
+  return}
+ if(t.id==='bbPost'){const v={};document.querySelectorAll('#boardMain [data-bf]').forEach(i=>v[i.dataset.bf]=i.value);BD.write=v;t.disabled=true;const j=await api('/api/bboard/post',{botId:BD.tab.slice(4),values:v});t.disabled=false;if(j.error)return err(j.error);BD.view='list';BD.write=null;return boardRefresh()}
  const tc=t.closest('[data-tid]');
  if(tc){const id=tc.dataset.tid,te=x=>tc.querySelector('[data-err]').textContent=x||'';
   if(t.hasAttribute('data-tpick')){if(t.textContent.indexOf('정말')<0){t.textContent='정말 고를까요? '+t.textContent;return}t.disabled=true;const j=await api('/api/talent/pick',{id});if(j.error){t.disabled=false;return te(j.error)}return boardRefresh()}
@@ -629,7 +663,7 @@ const ST={pending:'공개 심사 중',public:'다른 기업에 공개 중',rejec
 async function openMarket(){MK=await api('/api/bots/mine');mkDraft=null;mkTarget=null;renderMarket();open('mkVeil')}
 function renderMarket(){
  const tgt=mkTarget&&MK.bots.find(b=>b.id===mkTarget);
- const prev=mkDraft?`<div class="mkprev"><b>${esc(mkDraft.def.name)} · ${esc(MK.kinds[mkDraft.def.kind])}${mkDraft.def.ppt?' + PPT':''}</b><div class="note" style="padding:0">${esc(mkDraft.def.desc)}</div>${mkDraft.origin?`<div class="docerr" style="padding:0">다른 기업이 먼저 만든 봇을 복사한 것으로 보여요: ${owTxt(mkDraft.origin)} 직접 만든 봇이라면 올린 뒤 운영 기관에 알려 주세요.</div>`:''}${mkDraft.meta&&mkDraft.meta.from?`<div class="note" style="padding:0">내보낸 곳: ${esc(mkDraft.meta.from)}${mkDraft.meta.version?` · 버전 ${esc(mkDraft.meta.version)}`:''}${mkDraft.meta.at?` · ${esc(mkDraft.meta.at)}`:''}</div>`:''}${mkDraft.def.quick.length?`<div class="note" style="padding:0">빠른 요청: ${mkDraft.def.quick.map(esc).join(' · ')}</div>`:''}<pre>${esc(mkDraft.def.role)}</pre><div class="acts"><button class="btn" type="button" id="mkSubmit">${tgt?`"${esc(tgt.def?tgt.def.name:'')}" 업데이트로 `:''}기업방에 승인 요청</button><button class="btn ghost" type="button" id="mkReset">다시 고르기</button></div></div>`:'';
+ const prev=mkDraft?`<div class="mkprev"><b>${esc(mkDraft.def.name)} · ${esc(MK.kinds[mkDraft.def.kind])}${mkDraft.def.ppt?' + PPT':''}</b><div class="note" style="padding:0">${esc(mkDraft.def.desc)}</div>${mkDraft.origin?`<div class="docerr" style="padding:0">다른 기업이 먼저 만든 봇을 복사한 것으로 보여요: ${owTxt(mkDraft.origin)} 직접 만든 봇이라면 올린 뒤 운영 기관에 알려 주세요.</div>`:''}${mkDraft.meta&&mkDraft.meta.from?`<div class="note" style="padding:0">내보낸 곳: ${esc(mkDraft.meta.from)}${mkDraft.meta.version?` · 버전 ${esc(mkDraft.meta.version)}`:''}${mkDraft.meta.at?` · ${esc(mkDraft.meta.at)}`:''}</div>`:''}${mkDraft.def.quick.length?`<div class="note" style="padding:0">빠른 요청: ${mkDraft.def.quick.map(esc).join(' · ')}</div>`:''}${mkDraft.def.board?boardSummary(mkDraft.def.board):''}<pre>${esc(mkDraft.def.role)}</pre><div class="acts"><button class="btn" type="button" id="mkSubmit">${tgt?`"${esc(tgt.def?tgt.def.name:'')}" 업데이트로 `:''}기업방에 승인 요청</button><button class="btn ghost" type="button" id="mkReset">다시 고르기</button></div></div>`:'';
  const list=MK.bots.map(b=>{const d=b.def||(b.pending&&b.pending.def)||{},pr=b.pricing||{};
   if(b.discarded)return `<div class="mkbot"><b>${esc(d.name||'')}</b> <span class="st" style="color:#b42318">운영 기관이 폐기함</span><div class="note" style="padding:0">사유: ${esc(b.discarded.reason)} · 더 쓰거나 업데이트할 수 없어요.</div></div>`;
   return `<div class="mkbot"><b>${esc(d.name||'')}</b> <span class="st">${b.def?`버전 ${b.version}`:'기업방 승인 대기'}${b.pending&&b.def?' · 업데이트 승인 대기':''}</span>${b.publicStatus?` <span class="st">${ST[b.publicStatus]}</span>`:''}

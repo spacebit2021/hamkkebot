@@ -35,7 +35,7 @@ const COMMON_RULES = `\n\n[함께봇 공통 규칙]\n- 기업 정보와 대화�
 function customBotObj(c) {
   const d = c.def; if (!d) return null;
   const role = d.role + COMMON_RULES + (d.kind !== 'chat' ? `\n\n[이 종류 봇의 기본 규칙]\n${BUILTIN_ROLE(d.kind)}` : '');
-  return { id: c.id, name: d.name, short: d.short, color: d.color, tag: d.tag, desc: d.desc, hello: d.hello, quick: d.quick, kind: d.kind === 'chat' ? undefined : d.kind, ppt: d.ppt, role, custom: true, ownerOrgId: c.orgId, pricing: c.pricing || {} };
+  return { id: c.id, name: d.name, short: d.short, color: d.color, tag: d.tag, desc: d.desc, hello: d.hello, quick: d.quick, kind: d.kind === 'chat' ? undefined : d.kind, ppt: d.ppt, role, custom: true, ownerOrgId: c.orgId, pricing: c.pricing || {}, board: d.board || null };
 }
 const botById = id => BOTS.find(b => b.id === id && !b.soon) || (S.customBots && (c => c ? customBotObj(c) : null)(S.customBots.find(x => x.id === id)));
 // 이 기업이 쓸 수 있는 봇인지: 기본 봇, 우리 기업이 만든(승인된) 봇, 관리자가 공개한 봇
@@ -67,7 +67,8 @@ if (!S.expertLogins) S.expertLogins = {}; // 전문가 웹 로그인용 1회용 
 if (!S.expertGroups) S.expertGroups = {};
 if (!S.botCosts) S.botCosts = {};
 if (!S.posts) S.posts = [];
-if (!S.talents) S.talents = [];  // 인재 추천 [{id,orgId,by,at,status:'draft'|'open'|'closed',profile,private:{name,contact},consentBy,picks:[{orgId,at,amount}],hidden}]
+if (!S.talents) S.talents = [];
+if (!S.bposts) S.bposts = [];    // 봇 게시판 글 [{id,botId,orgId,by,at,status:'open'|'awaiting'|'closed',values,consentToken,actions:[{orgId,at,amount,fee}],hidden}]  // 인재 추천 [{id,orgId,by,at,status:'draft'|'open'|'closed',profile,private:{name,contact},consentBy,picks:[{orgId,at,amount}],hidden}]
 if (S.qseq == null) S.qseq = 0;  // 질문 버튼 번호 (텔레그램 /answer 번호)     // 게시판 [{id,board:'qna'|'rec',orgId,by,at,title,body,secret,botId,rating,kind,likes:[orgId],replies:[],hidden,pinned}]
 if (!S.claims) S.claims = [];   // 원작 기업의 복사 신고 [{id,at,orgId,origBotId,targetBotId,targetText,want,reason,status,note,decidedAt}]
 if (!S.customBots) S.customBots = [];   // 봇 마켓: 기업이 직접 만든 봇           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
@@ -1360,6 +1361,77 @@ async function pollTelegram() {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const json = (res, code, obj, headers) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...(headers || {}) }); res.end(JSON.stringify(obj)); };
 const body = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(d || '{}')); } catch (_) { ok({}); } }); });
+// ---------- 봇 게시판 (봇 정의의 board로 생기는 게시판) ----------
+const hasBot = (org, id) => S.rooms.some(r => r.orgId === org.id && r.bots.includes(id)) && canUseBot(org, id);
+const boardOf = id => { const b = botById(id); return b && b.board ? b.board : null; };
+// 이 기업에 보이는 게시판 탭: 초대한(방에 있는) 봇 중 게시판이 있는 것
+const boardTabs = org => [...new Set(S.rooms.filter(r => r.orgId === org.id).flatMap(r => r.bots))].filter(id => canUseBot(org, id) && boardOf(id)).map(id => ({ botId: id, name: boardOf(id).name, botName: botById(id).name, visibility: boardOf(id).visibility }));
+function canSeeBpost(org, p) {
+  if (p.orgId === org.id) return true;
+  const bd = boardOf(p.botId);
+  return !!bd && bd.visibility === 'shared' && p.status === 'open' && !p.hidden && hasBot(org, p.botId) || p.actions.some(a => a.orgId === org.id);
+}
+const bpostConsentUrl = p => `${baseUrl()}/c/${p.consentToken}`;
+function bpostView(org, p) {
+  const bd = boardOf(p.botId) || { fields: [], name: '', action: null }, mine = !!org && p.orgId === org.id, acted = !!org && p.actions.some(a => a.orgId === org.id);
+  const showPriv = !org || mine || acted;
+  const values = {}; for (const f of bd.fields) if (p.values[f.key] != null && (!f.private || showPriv)) values[f.key] = p.values[f.key];
+  return { id: p.id, botId: p.botId, at: p.at, by: p.by, orgName: (orgById(p.orgId) || {}).name || '', mine, acted, status: p.status, hidden: !!p.hidden, values, actions: p.actions.length,
+    ...(mine ? { earned: p.actions.reduce((a, x) => a + x.amount, 0), actedBy: p.actions.map(x => (orgById(x.orgId) || {}).name), ...(p.status === 'awaiting' ? { consentUrl: bpostConsentUrl(p) } : {}) } : {}) };
+}
+function cleanValues(bd, raw) {
+  const v = {}, errs = [];
+  for (const f of bd.fields) {
+    let x = raw && raw[f.key]; x = x == null ? '' : String(x).replace(/\r/g, '').trim();
+    x = x.slice(0, f.type === 'textarea' ? 2000 : 200);
+    if (x && f.type === 'date' && !SCHED.isDate(x)) { errs.push(`"${f.label}"은(는) 날짜로 적어 주세요`); continue; }
+    if (x && f.type === 'number' && !/^-?\d+(\.\d+)?$/.test(x)) { errs.push(`"${f.label}"은(는) 숫자로 적어 주세요`); continue; }
+    if (x && f.type === 'select' && !f.options.includes(x)) { errs.push(`"${f.label}"은(는) 선택지에서 골라 주세요`); continue; }
+    if (x && f.type === 'url' && !/^https?:\/\/\S+$/.test(x)) { errs.push(`"${f.label}"은(는) http로 시작하는 링크로 적어 주세요`); continue; }
+    if (!x && f.required) { errs.push(`"${f.label}"을(를) 적어 주세요`); continue; }
+    if (x) v[f.key] = x;
+  }
+  if (SENSITIVE_RE.test(JSON.stringify(v))) errs.push('주민등록번호·여권번호·계좌번호 같은 정보는 올릴 수 없어요');
+  return errs.length ? { error: errs.join(' · ') } : { values: v };
+}
+const bpostTitle = (bd, p) => { const f = bd && bd.fields.find(x => !x.private && p.values[x.key]); return f ? String(p.values[f.key]).slice(0, 40) : '글'; };
+// 개인정보가 들어간 게시판 글: 그 사람이 직접 동의 (인재 추천과 같은 방식)
+function bpostConsentPage(p, msg) {
+  const e = DOC.escapeHtml, bd = boardOf(p.botId) || { fields: [], name: '' }, o = orgById(p.orgId), bot = botById(p.botId);
+  const row = f => p.values[f.key] ? `<div><span class="mute">${e(f.label)}</span><br>${e(p.values[f.key])}</div>` : '';
+  const live = p.status === 'open' || p.status === 'closed', expired = p.status === 'awaiting' && p.consentExp < Date.now();
+  const act = p.status === 'awaiting' && !expired ? `<form method="post"><p class="q">이 내용으로 게시판에 올리는 데 동의하시나요?</p><button name="action" value="agree" class="ok">동의합니다</button><button name="action" value="decline" class="no">동의하지 않아요</button></form>`
+    : live ? `<p class="st">동의하셨어요. 지금 게시판에 ${p.status === 'open' ? '올라가 있어요' : '마감된 글로 남아 있어요'}.</p><form method="post"><p class="q">동의를 거두면 글을 내리고 지워요. 이미 내용을 받은 기업에는 지워 달라고 알려요.</p><button name="action" value="withdraw" class="no">동의 철회하기</button></form>`
+    : expired ? '<p class="st">링크 기간(7일)이 지났어요. 글을 쓴 기업에 새 링크를 요청해 주세요.</p>' : '<p class="st">이 글은 이제 없어요.</p>';
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>게시판 동의 · 함께봇</title>
+<style>body{margin:0;font:16px/1.6 "Malgun Gothic","Noto Sans KR",system-ui,sans-serif;color:#17202b;background:#f7f8fb}main{max-width:620px;margin:0 auto;padding:24px 18px 60px}h1{font-size:22px;margin:0 0 6px}h2{font-size:16px;margin:22px 0 6px}
+.card{background:#fff;border:1.5px solid #e4e7ec;border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;white-space:pre-wrap}.mute{color:#667085;font-size:13px}.priv{background:#fdf2fa;border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+ul{padding-left:20px}button{font:inherit;min-height:48px;border-radius:12px;border:0;padding:0 18px;margin:6px 6px 0 0;font-weight:700;cursor:pointer}.ok{background:#2d45e8;color:#fff}.no{background:#fff;border:1.5px solid #d0d5dd;color:#17202b}.q{font-weight:700;margin:18px 0 4px}.st{background:#ecfdf3;border-radius:12px;padding:10px 14px}.msg{background:#fffaeb;border-radius:12px;padding:10px 14px}</style></head><body><main>
+${msg ? `<p class="msg">${e(msg)}</p>` : ''}<h1>게시판 글 동의를 부탁드려요</h1>
+<p class="mute"><b>${e(o ? o.name : '')}</b>이(가) 사회적기업 플랫폼 "함께봇"의 「${e(bd.name)}」 게시판(${e(bot ? bot.name : '')})에 회원님 정보가 들어간 글을 올리려고 해요. 회원님이 동의하셔야 올라가요.</p>
+${bd.consentText ? `<p>${e(bd.consentText)}</p>` : ''}
+<h2>${bd.visibility === 'shared' ? '이 봇을 쓰는 기업들에 보이는 내용' : '게시판에 보이는 내용'}</h2><div class="card">${bd.fields.filter(f => !f.private).map(row).join('')}</div>
+<h2>${bd.action ? `「${e(bd.action.label)}」을(를) 누른 기업과 글 쓴 기업에만 보이는 내용` : '글 쓴 기업에만 보이는 내용'}</h2><div class="priv">${bd.fields.filter(f => f.private).map(row).join('') || '<span class="mute">없음</span>'}</div>
+<h2>알아 두실 것</h2><ul>${bd.action && bd.action.price ? `<li>기업이 「${e(bd.action.label)}」을(를) 누를 때마다 글을 쓴 ${e(o ? o.name : '')}이(가) 함께봇 토큰 ${bd.action.price}개(운영 기관 몫 ${feePct()}% 제외)를 받아요.</li>` : ''}<li>이 페이지에서 언제든 동의를 거둘 수 있어요. 이 링크는 다른 사람에게 보내지 마세요.</li></ul>
+${act}</main></body></html>`;
+}
+async function handleBpostConsent(req, res, p) {
+  let msg = '';
+  if (req.method === 'POST') {
+    const raw = await new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e4) req.destroy(); }); req.on('end', () => ok(d)); });
+    const action = new URLSearchParams(raw).get('action'), bd = boardOf(p.botId), title = bpostTitle(bd, p);
+    if (action === 'agree' && p.status === 'awaiting' && p.consentExp >= Date.now()) { p.status = 'open'; p.consentAt = Date.now(); p.at = Date.now(); msg = '동의해 주셔서 고마워요. 글이 올라갔어요.'; notifyOrg(p.orgId, `「${bd ? bd.name : '게시판'}」 글 "${title}"에 당사자가 직접 동의해서 올라갔어요.`); }
+    else if (action === 'decline' && p.status === 'awaiting') { S.bposts = S.bposts.filter(x => x !== p); p.status = 'deleted'; p.values = {}; msg = '동의하지 않으셨어요. 글을 올리지 않고 지웠어요.'; notifyOrg(p.orgId, `「${bd ? bd.name : '게시판'}」 글 "${title}"에 당사자가 동의하지 않아 지웠어요.`); }
+    else if (action === 'withdraw' && (p.status === 'open' || p.status === 'closed')) {
+      for (const a of p.actions) notifyOrg(a.orgId, `「${bd ? bd.name : '게시판'}」 글 "${title}"의 당사자가 동의를 철회했어요. 받으신 내용(연락처 등)은 지워 주세요.`);
+      S.bposts = S.bposts.filter(x => x !== p); p.status = 'deleted'; p.values = {}; msg = '동의를 철회했어요. 글을 내리고 지웠어요.'; notifyOrg(p.orgId, `「${bd ? bd.name : '게시판'}」 글 "${title}"의 당사자가 동의를 철회해 글을 내리고 지웠어요.`);
+    } else msg = '처리할 수 없는 요청이에요.';
+    save(); emit('board', { board: 'bot:' + p.botId }, '*');
+  }
+  res.writeHead(200, CONSENT_HEADERS);
+  return res.end(bpostConsentPage(p, msg));
+}
+
 // ---------- 인재 추천 봇 ----------
 // 다른 기업에는 경력·기술만 보여 주고, 이름·연락처는 그 인재를 고른 기업에만. 본인 동의를 확인해야 올라감
 const SENSITIVE_RE = /\d{6}\s*-\s*[1-4]\d{6}|주민\s*(등록)?\s*번호|여권\s*번호|계좌\s*번호/;
@@ -1413,6 +1485,8 @@ ${body}</main></body></html>`;
 const CONSENT_HEADERS = { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store', 'x-robots-tag': 'noindex', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" };
 async function handleConsent(req, res, token) {
   const t = S.talents.find(x => x.consentToken && x.consentToken === token);
+  const bp = !t && S.bposts.find(x => x.consentToken && x.consentToken === token);
+  if (bp) return handleBpostConsent(req, res, bp);
   if (!t) { res.writeHead(404, CONSENT_HEADERS); return res.end('<!DOCTYPE html><meta charset="utf-8"><title>없는 링크</title><p style="font-family:sans-serif;padding:40px">없는 링크이거나 이미 처리된 추천이에요.</p>'); }
   let msg = '';
   if (req.method === 'POST') {
@@ -1503,7 +1577,7 @@ const publicBots = org => [
   ...(org ? S.customBots.filter(c => canUseBot(org, c.id)).map(c => {
     const o = customBotObj(c), mine = c.orgId === org.id, pass = (c.passes || {})[org.id];
     const base = o.kind === 'site' ? costOf('site') : o.kind === 'ir' ? costOf('ir') : o.kind === 'sched' ? costOf('sched') : o.kind === 'todo' ? costOf('todo') : costOf('custom');
-    return { id: c.id, name: o.name, short: o.short, color: o.color, tag: o.tag, desc: o.desc, hello: o.hello, quick: o.quick, kind: o.kind, ppt: o.ppt, custom: true, mine, ownerName: (orgById(c.orgId) || {}).name, cost: base + shareFor(org, c).amount, origin: c.derivedFrom ? (o2 => o2 ? { orgName: (orgById(o2.orgId) || {}).name, name: o2.rec && o2.rec.publicStatus === 'public' ? o2.name : '', royalty: o2.orgId === org.id ? 0 : royaltyOf(o2) } : null)(originOf(c)) : null, pricing: mine ? c.pricing || {} : { perUse: (c.pricing || {}).perUse, passDays: (c.pricing || {}).passDays, passPrice: (c.pricing || {}).passPrice }, passUntil: pass && pass > Date.now() ? pass : null };
+    return { id: c.id, name: o.name, short: o.short, color: o.color, tag: o.tag, desc: o.desc, hello: o.hello, quick: o.quick, kind: o.kind, ppt: o.ppt, board: o.board, custom: true, mine, ownerName: (orgById(c.orgId) || {}).name, cost: base + shareFor(org, c).amount, origin: c.derivedFrom ? (o2 => o2 ? { orgName: (orgById(o2.orgId) || {}).name, name: o2.rec && o2.rec.publicStatus === 'public' ? o2.name : '', royalty: o2.orgId === org.id ? 0 : royaltyOf(o2) } : null)(originOf(c)) : null, pricing: mine ? c.pricing || {} : { perUse: (c.pricing || {}).perUse, passDays: (c.pricing || {}).passDays, passPrice: (c.pricing || {}).passPrice }, passUntil: pass && pass > Date.now() ? pass : null };
   }) : [])
 ].map((b, _, __, st = botRecStats()[b.id]) => st ? { ...b, rec: { n: st.n, avg: st.avg, likes: st.likes } } : b);
 const publicExperts = () => S.experts.filter(e => e.tgChatId && e.rate).map(e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, color: e.color, linked: true }));
@@ -1530,8 +1604,9 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
-    feePct: feePct(), platformFees: S.platformFees || 0,
+    feePct: feePct(), platformFees: S.platformFees || 0, feeHistory: (S.feeHistory || []).slice(-10).reverse(),
     adminTg: S.adminTg ? { title: S.adminTg.title, linkedAt: S.adminTg.linkedAt, by: S.adminTg.by } : null, tgReady: !!TG_TOKEN,
+    bposts: S.bposts.slice().sort((a, b) => b.at - a.at).slice(0, 200).map(x => ({ ...bpostView(null, x), ...((boardOf(x.botId) || {}).visibility === 'own' ? { values: {}, internal: true } : {}), boardName: (boardOf(x.botId) || {}).name || '(없어진 게시판)', botName: (botById(x.botId) || {}).name || '', visibility: (boardOf(x.botId) || {}).visibility, fields: (boardOf(x.botId) || { fields: [] }).fields })),
     talents: S.talents.filter(t => t.status !== 'draft').sort((a, b) => b.at - a.at).slice(0, 100).map(t => ({ id: t.id, at: t.at, status: t.status, hidden: !!t.hidden, orgName: (orgById(t.orgId) || {}).name, profile: t.profile, consentBy: t.consentBy, picks: t.picks.map(p => ({ orgName: (orgById(p.orgId) || {}).name, at: p.at, amount: p.amount })) })),
     posts: S.posts.slice().sort((a, b) => b.at - a.at).slice(0, 200).map(x => ({ ...postView(null, x, true), hideReason: x.hideReason || '', canReply: true })),
     claims: S.claims.slice().sort((x, y) => (x.status === 'open' ? 0 : 1) - (y.status === 'open' ? 0 : 1) || y.at - x.at).slice(0, 50).map(cl => {
@@ -1618,9 +1693,27 @@ async function adminApi(req, res, p, sess) {
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
   }
-  if (p === '/api/admin/fee') { const v = Number(b.pct); if (!Number.isInteger(v) || v < 0 || v > 30) return BAD(res, '운영 기관 몫은 0~30% 사이 정수로 정해 주세요'); S.feeRate = v / 100; save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
+  if (p === '/api/admin/fee') {
+    const v = Number(b.pct); if (!Number.isInteger(v) || v < 0 || v > 30) return BAD(res, '운영 기관 몫은 0~30% 사이 정수로 정해 주세요');
+    const old = feePct(); if (old === v) return json(res, 200, { ok: true, pct: v });
+    S.feeRate = v / 100;
+    S.feeHistory = S.feeHistory || []; S.feeHistory.push({ at: Date.now(), from: old, to: v });
+    const msg = `운영 기관 몫이 ${old}%에서 ${v}%로 바뀌었어요. 지금부터 받는 소득(봇 이용 몫·원작 몫·이용권·추천 보상·게시판 보상·전문가 상담비)에 바로 적용돼요.`;
+    for (const o of S.orgs) notifyOrg(o.id, msg);
+    for (const e of S.experts) if (e.tgChatId) tgSend(e.tgChatId, `[함께봇] 운영 기관 몫이 ${old}%에서 ${v}%로 바뀌었어요. 지금부터 받는 상담 토큰에 바로 적용돼요.`);
+    save(); emit('fee', { pct: v, from: old }, '*');
+    return json(res, 200, { ok: true, pct: v });
+  }
   if (p === '/api/admin/tg-admin/code') { S.adminLink = { code: crypto.randomBytes(4).toString('hex').toUpperCase(), exp: Date.now() + 10 * 6e4 }; save(); return json(res, 200, { code: S.adminLink.code, bot: tgUsername || null }); }
   if (p === '/api/admin/tg-admin/unlink') { if (S.adminTg) tgSend(S.adminTg.chatId, '관리자 답변 방 연결을 해제했어요.'); S.adminTg = null; save(); return json(res, 200, { ok: true }); }
+  const wm = p.match(/^\/api\/admin\/bboard\/(\w+)\/(hide|delete)$/);
+  if (wm) {
+    const x = S.bposts.find(y => y.id === wm[1]); if (!x) return BAD(res, '없는 글이에요', 404);
+    const bd = boardOf(x.botId), title = bpostTitle(bd, x);
+    if (wm[2] === 'hide') { x.hidden = !!b.hidden; if (x.hidden) notifyOrg(x.orgId, `운영 기관이 「${bd ? bd.name : '게시판'}」 글 "${title}"을(를) 숨겼어요${b.reason ? `: ${str(b.reason, 100)}` : '.'}`); }
+    else { S.bposts = S.bposts.filter(y => y !== x); notifyOrg(x.orgId, `운영 기관이 「${bd ? bd.name : '게시판'}」 글 "${title}"을(를) 지웠어요${b.reason ? `: ${str(b.reason, 100)}` : '.'}`); }
+    save(); emit('board', {}, '*'); return json(res, 200, { ok: true });
+  }
   const hm = p.match(/^\/api\/admin\/talent\/(\w+)\/(hide|delete)$/);
   if (hm) {
     const t = S.talents.find(x => x.id === hm[1]); if (!t) return BAD(res, '없는 추천이에요', 404);
@@ -1815,13 +1908,62 @@ async function userApi(req, res, p, sess) {
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
       sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null,
       feePct: feePct(),
+      boardTabs: boardTabs(org),
+      talentTab: hasBot(org, 'talent') || S.talents.some(t => (t.orgId === org.id && t.status !== 'draft') || t.picks.some(x => x.orgId === org.id)),
       boardUnread: S.posts.filter(x => x.orgId === org.id && x.unreadAnswer).length,
       todo: org.todo || todoRooms(org).length ? (() => { const td = ensureTodo(org), t = todayKst(), nx = TODO.upcoming(td, t); return { url: todoUrl(org), editUrl: todoEditUrl(org), v: td.v, next: nx, left: SCHED.diffDays(t, nx), days: td.cycle.days, count: td.items.filter(x => x.status === 'active').length }; })() : null
     });
+  // ----- 봇 게시판 -----
+  if (p.startsWith('/api/bboard')) {
+    const qs = new URL(req.url, 'http://x').searchParams;
+    if (p === '/api/bboard' && req.method === 'GET') {
+      const id = str(qs.get('bot'), 40), bd = boardOf(id);
+      if (!bd || !hasBot(org, id)) return BAD(res, '이 게시판은 봇을 기업방에 초대해야 쓸 수 있어요', 404);
+      const posts = S.bposts.filter(x => x.botId === id && canSeeBpost(org, x) && (bd.visibility !== 'own' || x.orgId === org.id)).sort((a, b) => b.at - a.at).slice(0, 200).map(x => bpostView(org, x));
+      return json(res, 200, { board: bd, botName: botById(id).name, posts, feePct: feePct() });
+    }
+    if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
+    const b = await body(req);
+    if (p === '/api/bboard/post') {
+      const id = str(b.botId, 40), bd = boardOf(id);
+      if (!bd || !hasBot(org, id)) return BAD(res, '이 게시판은 봇을 기업방에 초대해야 쓸 수 있어요', 404);
+      if (S.bposts.filter(x => x.orgId === org.id && Date.now() - x.at < 864e5).length >= 30) return BAD(res, '하루에 30개까지 올릴 수 있어요');
+      const cv = cleanValues(bd, b.values); if (cv.error) return BAD(res, cv.error);
+      const x = { id: newId('w'), botId: id, orgId: org.id, by: user.name, at: Date.now(), status: 'open', values: cv.values, actions: [], hidden: false };
+      if (bd.consent && bd.fields.some(f => f.private && cv.values[f.key])) { x.status = 'awaiting'; x.consentToken = crypto.randomBytes(16).toString('hex'); x.consentExp = Date.now() + 7 * 864e5; }
+      S.bposts.push(x); save(); emit('board', { board: 'bot:' + id }, '*');
+      return json(res, 200, bpostView(org, x));
+    }
+    const x = S.bposts.find(y => y.id === b.id); if (!x || !canSeeBpost(org, x)) return BAD(res, '없는 글이에요', 404);
+    const bd = boardOf(x.botId), title = bpostTitle(bd, x);
+    if (p === '/api/bboard/action') {
+      if (!bd || !bd.action || bd.visibility !== 'shared') return BAD(res, '이 게시판에는 누를 수 있는 버튼이 없어요');
+      if (x.orgId === org.id) return BAD(res, '우리 기업이 쓴 글이에요');
+      if (x.status !== 'open' || x.hidden) return BAD(res, '지금은 할 수 없는 글이에요');
+      if (!hasBot(org, x.botId)) return BAD(res, '봇을 기업방에 초대한 기업만 할 수 있어요', 403);
+      if (x.actions.some(a => a.orgId === org.id)) return BAD(res, `이미 「${bd.action.label}」을(를) 했어요`);
+      const price = bd.action.price, author = orgById(x.orgId);
+      if (price && !reserveTokens(org, price)) return BAD(res, `${price}토큰이 필요해요. 잔액(${org.wallet}토큰)이 부족해요.`);
+      let got = { net: 0, fee: 0 };
+      if (price) { record(org, { type: 'board_action', amount: price, botName: botById(x.botId).name, boardName: bd.name, postTitle: title, toOrgName: author ? author.name : '' }); afterSpend(org); if (author) got = creditOrg(author, price, { type: 'board_action_in', botName: botById(x.botId).name, boardName: bd.name, postTitle: title, fromOrgName: org.name }); }
+      x.actions.push({ orgId: org.id, at: Date.now(), amount: got.net, fee: got.fee, by: user.name });
+      if (author) notifyOrg(author.id, `${org.name}이(가) 「${bd.name}」 글 "${title}"에 「${bd.action.label}」을(를) 눌렀어요.${price ? ` ${got.net}토큰을 받았어요${got.fee ? ` (${price}토큰 중 운영 기관 몫 ${got.fee} 제외)` : ''}.` : ''}`);
+      const priv = bd.fields.filter(f => f.private && x.values[f.key]).map(f => `${f.label}: ${x.values[f.key]}`).join(' · ');
+      notifyOrg(org.id, `「${bd.name}」 글 "${title}"에 「${bd.action.label}」을(를) 했어요${price ? ` (${price}토큰)` : ''}.${priv ? ` ${priv}` : ''} (글 쓴 기업: ${author ? author.name : '-'})`);
+      save(); emit('board', { board: 'bot:' + x.botId }, '*');
+      return json(res, 200, bpostView(org, x));
+    }
+    if (x.orgId !== org.id) return BAD(res, '우리 기업이 쓴 글만 바꿀 수 있어요', 403);
+    if (p === '/api/bboard/close') { if (x.status !== 'open') return BAD(res, '올라가 있는 글이 아니에요'); x.status = 'closed'; }
+    else if (p === '/api/bboard/delete') { S.bposts = S.bposts.filter(y => y !== x); x.values = {}; }
+    else return BAD(res, '없는 기능이에요', 404);
+    save(); emit('board', { board: 'bot:' + x.botId }, '*'); return json(res, 200, { ok: true });
+  }
   // ----- 인재 추천 -----
   if (p.startsWith('/api/talent')) {
     if (p === '/api/talent' && req.method === 'GET') {
-      const list = S.talents.filter(t => (t.status === 'open' && !t.hidden) || (t.orgId === org.id && t.status !== 'draft') || t.picks.some(x => x.orgId === org.id)).sort((a, b) => b.at - a.at).slice(0, 200).map(t => talentView(org, t));
+      const inv = hasBot(org, 'talent');
+      const list = S.talents.filter(t => (inv && t.status === 'open' && !t.hidden) || (t.orgId === org.id && t.status !== 'draft') || t.picks.some(x => x.orgId === org.id)).sort((a, b) => b.at - a.at).slice(0, 200).map(t => talentView(org, t));
       return json(res, 200, { items: list, fee: costOf('talent_pick') });
     }
     if (p === '/api/talent/get' && req.method === 'GET') {
@@ -1854,6 +1996,7 @@ async function userApi(req, res, p, sess) {
     }
     if (p === '/api/talent/pick') {
       if (t.status !== 'open' || t.hidden) return BAD(res, '지금 고를 수 없는 인재예요', 404);
+      if (!hasBot(org, 'talent')) return BAD(res, '인재추천 봇을 기업방에 초대한 기업만 고를 수 있어요', 403);
       if (t.orgId === org.id) return BAD(res, '우리 기업이 추천한 인재는 고를 수 없어요');
       if (t.picks.some(x => x.orgId === org.id)) return BAD(res, '이미 고른 인재예요');
       const fee = costOf('talent_pick'), rec = orgById(t.orgId);

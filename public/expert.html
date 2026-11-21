@@ -164,7 +164,7 @@ async function viewIr(){
 $('irList').addEventListener('click',e=>{const b=e.target.closest('[data-iro]');if(!b)return;irOrg=b.dataset.iro;irN=null;history.replaceState(null,'','#ir-'+irOrg);loadIr()});
 $('irBox').addEventListener('click',async e=>{const b=e.target.closest('[data-irc-send]');if(!b)return;const i=b.dataset.ircSend,ta=document.querySelector(`[data-irc-text="${i}"]`);
  b.disabled=true;const j=await api('/api/expert/ir/comment',{orgId:irOrg,slide:+i,text:ta.value});b.disabled=false;if(j.error){ta.placeholder=j.error;return}ta.value='';viewIr()});
-let es=null;function live(){if(es)return;try{es=new EventSource('/api/events');let t;es.addEventListener('irx',()=>{clearTimeout(t);t=setTimeout(()=>{const f=document.activeElement;loadIr()},400)})}catch(e){}}
+let es=null;function live(){if(es)return;try{es=new EventSource('/api/events');let t;es.addEventListener('fee',()=>load().catch(()=>{}));es.addEventListener('irx',()=>{clearTimeout(t);t=setTimeout(()=>{const f=document.activeElement;loadIr()},400)})}catch(e){}}
 $('pf').addEventListener('input',preview);
 $('pf').addEventListener('submit',async e=>{e.preventDefault();
  const j=await api('/api/expert/profile',{name:$('pName').value,field:$('pField').value,desc:$('pDesc').value,career:$('pCareer').value,hours:$('pHours').value,rate:+$('pRate').value,available:$('pAvail').checked});
