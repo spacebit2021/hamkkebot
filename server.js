@@ -30,6 +30,7 @@ const DOC = require('./doc');
 const DECK = require('./deck');
 const SCHED = require('./sched');
 const TODO = require('./todo');
+const SEC = require('./security');
 const MARKET = require('./market');
 // 기본 봇 + 기업이 직접 만든 봇(S.customBots). 직접 만든 봇은 승인된 정의(def)가 있을 때만 쓸 수 있음
 const BUILTIN_ROLE = kind => (BOTS.find(b => b.kind === kind) || {}).role || '';
@@ -70,6 +71,7 @@ if (!S.expertGroups) S.expertGroups = {};
 if (!S.botCosts) S.botCosts = {};
 if (!S.posts) S.posts = [];
 if (!S.talents) S.talents = [];
+if (!S.secSites) S.secSites = {}; // 보안 봇 사이트 {orgId:[{site,token,verified,verifiedAt,how,hour,lastAuto,manual:{day,n},last:{ids,grade,score,at},addedBy}]}
 if (!S.bposts) S.bposts = [];    // 봇 게시판 글 [{id,botId,orgId,by,at,status:'open'|'awaiting'|'closed',values,consentToken,actions:[{orgId,at,amount,fee}],hidden}]  // 인재 추천 [{id,orgId,by,at,status:'draft'|'open'|'closed',profile,private:{name,contact},consentBy,picks:[{orgId,at,amount}],hidden}]
 if (S.qseq == null) S.qseq = 0;  // 질문 버튼 번호 (텔레그램 /answer 번호)     // 게시판 [{id,board:'qna'|'rec',orgId,by,at,title,body,secret,botId,rating,kind,likes:[orgId],replies:[],hidden,pinned}]
 if (!S.claims) S.claims = [];   // 원작 기업의 복사 신고 [{id,at,orgId,origBotId,targetBotId,targetText,want,reason,status,note,decidedAt}]
@@ -427,6 +429,7 @@ async function runBot(room, botId, text, ctx = {}) {
   else if (bot.kind === 'sched') { const mode = schedMode(text); costId = mode === 'detail' ? 'sched_detail' : mode === 'ppt' ? 'sched_ppt' : 'sched'; run = () => runSchedBot(bot, room, org, text, mode, ctx); }
   else if (bot.kind === 'todo') { const mode = ctx.auto ? 'review' : todoMode(text); costId = mode === 'review' ? 'todo_review' : mode === 'detail' ? 'todo_detail' : mode === 'ppt' ? 'todo_ppt' : 'todo'; run = () => runSchedBot(bot, room, org, text, mode, ctx, 'todo'); }
   else if (bot.kind === 'talent') run = () => runTalentBot(bot, room, org, text, ctx);
+  else if (bot.kind === 'security') { costId = ctx.site ? 'security_scan' : 'free'; run = () => runSecurityBot(bot, room, org, text, ctx); } // 사이트 등록·인증·목록은 무료, 점검만 토큰
   else if (bot.kind === 'ir') { const mode = irMode(org, text); costId = mode === 'create' ? 'ir' : mode === 'vc' ? 'ir_vc' : 'ir_update'; run = () => runIrBot(bot, room, org, text, mode); }
   else if (isDeck) { costId = bot.custom ? 'custom_ppt' : `${bot.id}_ppt`; run = () => runDeckBot(bot, room, org, text); }
   else run = () => askClaude(bot, room, text);
@@ -1369,6 +1372,89 @@ async function pollTelegram() {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const json = (res, code, obj, headers) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...(headers || {}) }); res.end(JSON.stringify(obj)); };
 const body = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(d || '{}')); } catch (_) { ok({}); } }); });
+// ---------- 보안 봇 ----------
+// 소유를 인증한 사이트만 점검. 매일 정한 시각에 자동, 결과는 「보안 점검 기록」(우리 기업만 보는 봇 게시판)에
+const secList = org => S.secSites[org.id] || (S.secSites[org.id] = []);
+const SEC_HELP = '· "사이트 등록 https://우리사이트.kr" — 사이트 추가 (최대 5곳)\n· "사이트 인증 확인해 줘" — 소유 인증 확인\n· "지금 점검해 줘" — 바로 점검 (사이트당 하루 5번까지)\n· "점검 시각 7시" — 매일 자동 점검 시각 (한국 시간)\n· "사이트 목록" · "https://… 삭제"';
+async function runSecurityBot(bot, room, org, text, ctx) {
+  const list = secList(org);
+  if (ctx.site) return runSecScan(bot, room, org, ctx);
+  const um = text.match(/https?:\/\/[^\s<>"']+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?/i), site = um && SEC.normSite(um[0]);
+  if (site && /삭제|빼|지워|그만/.test(text)) {
+    const i = list.findIndex(x => x.site === site); if (i < 0) return { free: true, text: `${site}은(는) 등록된 사이트가 아니에요.` };
+    list.splice(i, 1); save(); return { free: true, text: `${site}을(를) 점검 목록에서 뺐어요. 지난 점검 기록은 게시판에 남아 있어요.` };
+  }
+  if (site && /등록|추가|넣어|점검할/.test(text) || (site && !list.some(x => x.site === site) && !/점검|검사|검증/.test(text))) {
+    if (list.some(x => x.site === site)) return { free: true, text: `${site}은(는) 이미 등록돼 있어요.${list.find(x => x.site === site).verified ? '' : ' 아직 소유 인증 전이에요. "사이트 인증 확인해 줘"라고 보내 주세요.'}` };
+    if (list.length >= 5) return { free: true, text: '사이트는 5곳까지 등록할 수 있어요. 안 쓰는 사이트를 먼저 빼 주세요.' };
+    const ck = await MARKET.checkUrl(site + '/'); if (ck.error) return { free: true, text: `${site}은(는) 점검할 수 없는 주소예요 (${ck.error}).` };
+    const token = 'hb-verify-' + crypto.randomBytes(8).toString('hex');
+    list.push({ site, token, verified: false, hour: list[0] ? list[0].hour : 6, addedBy: ctx.author || '기업방', addedAt: Date.now(), last: null });
+    save();
+    return { free: true, text: `${site}을(를) 등록했어요. 우리 기업 사이트인지 확인하려고 소유 인증을 받아요 (남의 사이트는 점검하지 않아요). 둘 중 하나를 해 주세요.\n\n① ${site}/.well-known/hamkkebot-verify.txt 파일을 만들고 이 값만 넣기:\n${token}\n\n② 첫 페이지 <head> 안에 넣기:\n<meta name="hamkkebot-verify" content="${token}">\n\n올린 뒤 "사이트 인증 확인해 줘"라고 보내 주세요.` };
+  }
+  if (/인증|확인/.test(text) && !/점검|검사|검증/.test(text)) {
+    const todo = list.filter(x => !x.verified && (!site || x.site === site));
+    if (!todo.length) return { free: true, text: list.length ? '인증할 사이트가 없어요. 모두 인증돼 있어요.' : '등록된 사이트가 없어요. "사이트 등록 https://…"부터 해 주세요.' };
+    const out = [];
+    for (const x of todo) { const v = await SEC.verify(x.site, x.token); if (v.ok) { x.verified = true; x.verifiedAt = Date.now(); x.how = v.how; out.push(`✓ ${x.site} 인증됐어요 (${v.how === 'file' ? '파일' : '메타 태그'}). 매일 ${x.hour}시에 자동으로 점검해요.`); } else out.push(`✗ ${x.site} 인증 값을 찾지 못했어요${v.error ? ` (${v.error})` : ''}. 파일이나 메타 태그에 ${x.token} 이 들어 있는지 확인해 주세요.`); }
+    save(); return { free: true, text: out.join('\n') };
+  }
+  const hm = text.match(/(\d{1,2})\s*시/);
+  if (hm && /시각|시간|매일|자동/.test(text) && !/지금/.test(text)) {
+    const hr = +hm[1]; if (hr > 23) return { free: true, text: '0~23시 사이로 알려 주세요.' };
+    for (const x of list) x.hour = hr; save();
+    return { free: true, text: `매일 ${hr}시(한국 시간)에 인증된 사이트를 자동으로 점검할게요.` };
+  }
+  if (/점검|검사|검증|스캔|확인해/.test(text)) {
+    const targets = list.filter(x => x.verified && (!site || x.site === site)), today = todayKst();
+    if (!targets.length) return { free: true, text: list.length ? '아직 소유 인증된 사이트가 없어요. "사이트 인증 확인해 줘"부터 해 주세요.' : '등록된 사이트가 없어요. "사이트 등록 https://…"부터 해 주세요.' };
+    const go = [], skip = [];
+    for (const x of targets) { x.manual = x.manual && x.manual.day === today ? x.manual : { day: today, n: 0 }; if (x.manual.n >= 5) skip.push(x.site); else { x.manual.n++; go.push(x.site); } }
+    save();
+    for (const st of go) setTimeout(() => runBot(room, 'security', '점검 ' + st, { site: st, author: ctx.author }), 0);
+    return { free: true, text: `${go.length ? `${go.join(', ')} 점검을 시작했어요 (사이트당 ${costOf('security_scan')}토큰). 끝나면 결과를 알려 드려요.` : ''}${skip.length ? `\n${skip.join(', ')}은(는) 오늘 직접 점검을 5번 해서 내일 다시 할 수 있어요 (자동 점검은 그대로 해요).` : ''}` };
+  }
+  if (/목록|사이트|설정|상태/.test(text) || !text.trim()) {
+    if (!list.length) return { free: true, text: `등록된 사이트가 없어요.\n${SEC_HELP}` };
+    return { free: true, text: `점검 사이트 ${list.length}곳 (매일 ${list[0].hour}시 자동 점검)\n${list.map(x => `· ${x.site} — ${x.verified ? '인증됨' : '인증 전'}${x.last ? ` · 지난 점검 ${gradeTxt(x.last)} ${new Date(x.last.at + 9 * 36e5).toISOString().slice(5, 10)}` : ''}`).join('\n')}` };
+  }
+  return { free: true, text: SEC_HELP };
+}
+const gradeTxt = g => g.grade === '접속 안 됨' ? '접속 안 됨' : `${g.grade}등급 (${g.score}점)`;
+async function runSecScan(bot, room, org, ctx) {
+  const x = secList(org).find(y => y.site === ctx.site);
+  if (!x || !x.verified) return { silent: true };
+  const r = await SEC.scan(x.site, true), ids = r.findings.map(f => f.id), prev = x.last;
+  const added = prev ? r.findings.filter(f => !prev.ids.includes(f.id)) : [], fixed = prev ? prev.ids.filter(i => !ids.includes(i)).map(i => (prev.titles || {})[i] || i) : [];
+  const changes = !prev ? '첫 점검이에요.' : `${gradeTxt(prev)} → ${gradeTxt(r)}${added.length ? `\n새로 생긴 문제: ${added.map(f => f.title).join(' / ')}` : ''}${fixed.length ? `\n해결된 문제: ${fixed.join(' / ')}` : ''}${!added.length && !fixed.length ? '\n지난 점검과 달라진 점이 없어요.' : ''}`;
+  // 쉬운 말 요약 (점검 결과에 있는 사실만). AI가 안 되면 규칙으로 만든 요약
+  let summary = '';
+  const brief = r.findings.map(f => ({ 수준: SEC.LEVEL[f.level], 문제: f.title, 내용: f.detail, 고칠방법: f.fix }));
+  const ai = await callClaude(`${bot.role}\n\n아래는 ${x.site} 점검 결과예요 (${r.grade}등급, ${r.score}점). 3~5문장으로 요약하고, 가장 먼저 고칠 것 3가지를 순서대로 알려 주세요. 결과에 없는 내용은 쓰지 마세요. 서식은 줄바꿈만.`, JSON.stringify({ 등급: r.grade, 점수: r.score, 지난점검과비교: changes, 결과: brief }).slice(0, 8000), 900);
+  summary = ai.error ? `${gradeTxt(r)} · ${SEC.countLine(r)}.${r.findings[0] ? ` 먼저 고칠 것: ${r.findings.slice(0, 3).map(f => f.title).join(' / ')}.` : ' 발견한 문제가 없어요.'}${ai.error ? ' (AI 요약을 만들지 못해 규칙으로 정리했어요)' : ''}` : str(ai.text, 1500);
+  const today = todayKst();
+  S.bposts.push({ id: newId('w'), botId: 'security', orgId: org.id, by: ctx.auto ? '보안 봇 (자동)' : (ctx.author || '보안 봇'), at: Date.now(), status: 'open', values: { site: x.site, day: today, grade: `${gradeTxt(r)} · ${SEC.countLine(r)}`, summary, changes, findings: SEC.findingsText(r).slice(0, 2000) }, actions: [], hidden: false });
+  x.last = { ids, titles: Object.fromEntries(r.findings.map(f => [f.id, f.title])), grade: r.grade, score: r.score, at: Date.now(), counts: r.counts };
+  save(); emit('board', { board: 'bot:security' }, org.id);
+  const top = r.findings.filter(f => f.level === 'high' || f.level === 'mid').slice(0, 3);
+  return { text: `[보안 점검${ctx.auto ? ' · 자동' : ''}] ${x.site}\n${gradeTxt(r)} · ${SEC.countLine(r)}\n${prev ? changes.split('\n')[0] + '\n' : ''}${top.length ? `먼저 고칠 것:\n${top.map(f => `· [${SEC.LEVEL[f.level]}] ${f.title}`).join('\n')}\n` : ''}자세한 내용은 「게시판 → 보안 점검 기록」에 남겼어요. (겉에서 보는 기본 점검이라 모든 취약점을 찾지는 못해요)` };
+}
+// 매분: 정한 시각이 지나면 인증된 사이트를 하루 한 번 자동 점검
+async function secTick() {
+  const now = nowMs(), today = SCHED.kstDate(now), hour = new Date(now + 9 * 36e5).getUTCHours();
+  for (const org of S.orgs) {
+    const list = S.secSites[org.id]; if (!list || !list.length) continue;
+    const room = S.rooms.find(r => r.orgId === org.id && r.bots.includes('security')); if (!room) continue;
+    for (const x of list) {
+      if (!x.verified || x.lastAuto === today || hour < (x.hour == null ? 6 : x.hour)) continue;
+      x.lastAuto = today; save();
+      await runBot(room, 'security', '자동 점검 ' + x.site, { site: x.site, auto: true, author: '보안 봇 (자동)' });
+    }
+  }
+}
+setInterval(() => secTick().catch(e => console.error(e)), +process.env.SEC_TICK_MS || 60000).unref();
+
 // ---------- 봇 게시판 (봇 정의의 board로 생기는 게시판) ----------
 const hasBot = (org, id) => S.rooms.some(r => r.orgId === org.id && r.bots.includes(id)) && canUseBot(org, id);
 const boardOf = id => { const b = botById(id); return b && b.board ? b.board : null; };
