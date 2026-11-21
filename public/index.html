@@ -118,6 +118,12 @@ button{cursor:pointer}
 .vclist{list-style:none;margin:0;padding:0}.vclist li{border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--card)}
 .vclist a{overflow-wrap:anywhere;font-size:13px}.revlist li{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .tag.mk{color:#7a5af8}
+.post{display:block;width:100%;text-align:left;border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px;background:var(--card);color:inherit;font:inherit;cursor:pointer}
+.post b{display:block;font-size:15px}.post .meta{font-size:13px;color:var(--mute);margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-size:12px;padding:1px 8px;border-radius:8px;background:var(--side)}.chip.lock{background:#fef0c7;color:#93370d}.chip.ans{background:#d1fadf;color:#05603a}.chip.pin{background:#e0eaff;color:#2d45e8}
+.stars{color:#f79009;letter-spacing:1px}.pbody{white-space:pre-wrap;line-height:1.6;margin:8px 0 14px}
+.reply{border-top:1px solid var(--line);padding:10px 0}.reply.adm{background:light-dark(#f0f6ff,#141b2e);border-radius:10px;padding:10px 12px;border:0;margin:6px 0}
+.starpick{display:flex;gap:4px}.starpick button{min-width:44px;min-height:44px;border-radius:10px;border:1.5px solid var(--line);background:none;font-size:20px;color:#d0d5dd}.starpick button[aria-pressed=true]{color:#f79009;border-color:#f79009}
 .rad{display:flex;align-items:center;gap:10px;min-height:44px;font-size:14px;cursor:pointer}.rad input{width:20px;height:20px;min-height:0;margin:0;flex:none;accent-color:var(--pri)}
 .mkt textarea{width:100%;min-height:120px;font:13px/1.5 ui-monospace,monospace}
 .mkprev{border:1.5px solid #7a5af8;border-radius:14px;padding:14px;background:var(--card);display:flex;flex-direction:column;gap:8px}
@@ -183,6 +189,7 @@ textarea.field{min-height:80px;resize:vertical}
   </div>
   <button class="org" id="orgBtn"><b id="orgName">기업 정보 입력하기</b><span id="orgMission">봇이 우리 기업을 알고 답하도록</span></button>
   <button class="docbtn" id="docBtn" type="button"><span>기업 정보 문서</span><span class="badge" id="docBadge" hidden></span></button>
+  <button class="docbtn" id="boardBtn" type="button"><span>게시판 (Q&amp;A · 봇 추천)</span><span class="badge" id="boardBadge" hidden></span></button>
   <button class="docbtn" id="irBtn" type="button"><span>IR 자료</span><span class="badge" id="irBadge" hidden></span></button>
   <a class="docbtn sitelink" id="schedLink" target="_blank" rel="noopener" hidden><span>일정표 (간트차트)</span><span class="note" style="padding:0" id="schedLinkN"></span></a>
   <div class="todobox" id="todoBox" hidden><a class="docbtn sitelink" id="todoLink" target="_blank" rel="noopener"><span>할 일표</span><span class="note" style="padding:0" id="todoLinkN"></span></a><div class="todoacts"><a class="btn ghost sm" id="todoEdit" target="_blank" rel="noopener">고치기 ↗</a><button class="btn ghost sm" type="button" id="todoReset">링크 새로 만들기</button></div></div>
@@ -240,6 +247,13 @@ textarea.field{min-height:80px;resize:vertical}
  </div>
 </div>
 
+<div class="veil docveil" id="boardVeil" role="dialog" aria-modal="true" aria-labelledby="boardTitle">
+ <div class="sheet docsheet">
+  <div class="dochead"><div><h3 id="boardTitle">게시판</h3><div class="note" style="padding:0" id="boardLead"></div></div><button class="btn ghost" type="button" data-close>닫기</button></div>
+  <div class="doctabs" id="boardTabs"><button type="button" data-btab="qna">Q&amp;A</button><button type="button" data-btab="rec">봇 추천</button></div>
+  <div id="boardMain" style="overflow:auto"></div>
+ </div>
+</div>
 <div class="veil docveil" id="irVeil" role="dialog" aria-modal="true" aria-labelledby="irTitle">
  <div class="sheet docsheet irsheet">
   <div class="dochead">
@@ -353,7 +367,7 @@ function renderLog(){
  for(const id in keep){const c=document.querySelector(`.paycard[data-pay="${id}"]`);if(c){c.querySelector('[data-amtin]').value=keep[id][0];c.querySelector('[data-memo]').value=keep[id][1]}}
  $('log').scrollTop=$('log').scrollHeight;
 }
-function render(){$('walletN').textContent=S.wallet||0;{const sc=S.sched;$('schedLink').hidden=!sc;if(sc){$('schedLink').href=sc.url;$('schedLinkN').textContent=`버전 ${sc.v} ↗`}}{const td=S.todo;$('todoBox').hidden=!td;if(td){$('todoLink').href=td.url;$('todoEdit').href=td.editUrl;$('todoLinkN').textContent=`${td.count}개 · 점검 ${td.left===0?'오늘':'D-'+td.left} ↗`}}{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
+function render(){$('walletN').textContent=S.wallet||0;$('boardBadge').hidden=!S.boardUnread;$('boardBadge').textContent=S.boardUnread||'';{const sc=S.sched;$('schedLink').hidden=!sc;if(sc){$('schedLink').href=sc.url;$('schedLinkN').textContent=`버전 ${sc.v} ↗`}}{const td=S.todo;$('todoBox').hidden=!td;if(td){$('todoLink').href=td.url;$('todoEdit').href=td.editUrl;$('todoLinkN').textContent=`${td.count}개 · 점검 ${td.left===0?'오늘':'D-'+td.left} ↗`}}{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
 
 let callOpen=null, reviewMsg=null, xq='', xsort='';
 function renderBots(){
@@ -361,7 +375,7 @@ function renderBots(){
  $('dirLead').textContent=reviewMsg?'초안을 검토받을 사람 전문가를 골라 주세요.':'AI 봇은 바로 답하고, 사람 전문가는 텔레그램으로 호출돼 답장합니다.';
  const card=b=>{
   const inRoom=r.bots.includes(b.id);
-  return `<div class="bot ${b.soon?'soon':''}"><header>${av(b)}<div><b>${esc(b.name)}</b><div class="tag">${esc(b.tag)}${b.soon?'':' · 텔레그램 /'+esc(b.id)}</div>${b.origin&&b.origin.royalty?`<div class="tag mk">원작 ${esc(b.origin.orgName)} · 요청당 원작 몫 ${b.origin.royalty}토큰 포함</div>`:''}${b.custom?`<div class="tag mk">${b.mine?'우리 기업이 만든 봇':`${esc(b.ownerName)} 제작${b.pricing.perUse?` · 요청당 +${b.pricing.perUse}토큰`:b.pricing.perUse===0?' · 추가 토큰 없음':''}${b.pricing.passPrice!=null?` · ${b.pricing.passDays}일 이용권 ${b.pricing.passPrice}토큰`:''}${b.passUntil?` · 이용권 ${new Date(b.passUntil).toLocaleDateString('ko-KR')}까지`:''}`}</div>`:''}</div>${b.soon?'':`<div class="rate"><b>${b.cost}</b><span>${b.cost?'토큰/요청':'무료'}</span></div>`}</header><p>${esc(b.desc)}</p>${b.custom&&!b.mine&&b.pricing.passPrice!=null&&!b.passUntil?`<button class="btn ghost" type="button" data-pass="${b.id}">${b.pricing.passDays}일 이용권 사기 (${b.pricing.passPrice}토큰)</button>`:''}${b.soon?'<span class="soonchip">준비 중</span>':inRoom?'<button class="btn ghost" data-kick="'+b.id+'">내보내기</button>':'<button class="btn" data-invite="'+b.id+'">초대하기</button>'}</div>`};
+  return `<div class="bot ${b.soon?'soon':''}"><header>${av(b)}<div><b>${esc(b.name)}</b><div class="tag">${esc(b.tag)}${b.soon?'':' · 텔레그램 /'+esc(b.id)}</div>${b.rec?`<div class="tag"><span class="stars">★</span> ${b.rec.avg} · 추천 ${b.rec.n}${b.rec.likes?` · 공감 ${b.rec.likes}`:''}</div>`:''}${b.origin&&b.origin.royalty?`<div class="tag mk">원작 ${esc(b.origin.orgName)} · 요청당 원작 몫 ${b.origin.royalty}토큰 포함</div>`:''}${b.custom?`<div class="tag mk">${b.mine?'우리 기업이 만든 봇':`${esc(b.ownerName)} 제작${b.pricing.perUse?` · 요청당 +${b.pricing.perUse}토큰`:b.pricing.perUse===0?' · 추가 토큰 없음':''}${b.pricing.passPrice!=null?` · ${b.pricing.passDays}일 이용권 ${b.pricing.passPrice}토큰`:''}${b.passUntil?` · 이용권 ${new Date(b.passUntil).toLocaleDateString('ko-KR')}까지`:''}`}</div>`:''}</div>${b.soon?'':`<div class="rate"><b>${b.cost}</b><span>${b.cost?'토큰/요청':'무료'}</span></div>`}</header><p>${esc(b.desc)}</p>${b.custom&&!b.mine&&b.pricing.passPrice!=null&&!b.passUntil?`<button class="btn ghost" type="button" data-pass="${b.id}">${b.pricing.passDays}일 이용권 사기 (${b.pricing.passPrice}토큰)</button>`:''}${b.soon?'<span class="soonchip">준비 중</span>':inRoom?'<button class="btn ghost" data-kick="'+b.id+'">내보내기</button>':'<button class="btn" data-invite="'+b.id+'">초대하기</button>'}</div>`};
  const affordable=x=>x.rate?Math.floor(S.wallet/x.rate*60):0;
  const fmtMin=m=>m>=60?`${Math.floor(m/60)}시간${m%60?' '+m%60+'분':''}`:`${m}분`;
  let list=(S.experts||[]).filter(x=>!xq||(x.name+x.field+(x.desc||'')+(x.career||'')).toLowerCase().includes(xq.toLowerCase()));
@@ -465,6 +479,7 @@ es=new EventSource('/api/events');
 es.onerror=()=>{if(es&&es.readyState===2){es=null;load().catch(()=>{})}};
 es.addEventListener('room',e=>{const d=JSON.parse(e.data);if(d.roomId)delete typing[d.roomId];clearTimeout(t);t=setTimeout(async()=>{const wasTg=room()&&room().tgChatId;await load();if($('tgVeil').classList.contains('open')&&!wasTg&&room().tgChatId)renderTg()},120)});
 es.addEventListener('typing',e=>{const d=JSON.parse(e.data);typing[d.roomId]=d.botId;if(room()&&room().id===d.roomId)renderLog()});
+es.addEventListener('board',()=>{if($('boardVeil').classList.contains('open'))boardRefresh();clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),300)});
 es.addEventListener('todo',()=>{clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),150)});
 es.addEventListener('sched',()=>{clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),150)});
 es.addEventListener('ir',async()=>{await loadIr();if($('irVeil').classList.contains('open')&&!document.activeElement.matches('#irMain textarea'))renderIr()});
@@ -484,6 +499,58 @@ $('log').addEventListener('click',async e=>{
 },true);
 
 $('todoReset').addEventListener('click',async e=>{const b=e.currentTarget;if(b.textContent!=='정말 바꿀까요?'){b.textContent='정말 바꿀까요?';return}b.disabled=true;await api('/api/todo/token',{});b.disabled=false;b.textContent='링크 새로 만들기';load().catch(()=>{})});
+/* ===== 게시판 ===== */
+let BD={tab:'qna',view:'list',id:null,data:null,post:null,write:null};
+const stars=n=>'★'.repeat(n)+'☆'.repeat(5-n);
+const when=t=>new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+async function openBoard(tab){BD={tab:tab||BD.tab,view:'list',id:null,data:null,post:null,write:null};open('boardVeil');await boardRefresh()}
+async function boardRefresh(){BD.data=await api('/api/board?board='+BD.tab);if(BD.view==='post'&&BD.id){const j=await api('/api/board/post?id='+BD.id);if(j.error){BD.view='list'}else BD.post=j}renderBoard()}
+function renderBoard(){
+ document.querySelectorAll('[data-btab]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.btab===BD.tab));
+ $('boardLead').textContent=BD.tab==='qna'?'운영 기관에 묻고 답을 받아요. 비밀글은 우리 기업과 운영 기관만 볼 수 있어요.':'직접 써 본 봇을 다른 기업에 추천해요. 우리 기업이 만든 봇은 추천할 수 없어요.';
+ const M=$('boardMain'),D=BD.data||{posts:[]};
+ if(BD.view==='post'&&BD.post){const p=BD.post;
+  M.innerHTML=`<button class="btn ghost" type="button" data-bback>← 목록</button>
+  <h3 style="margin:12px 0 4px">${p.pinned?'<span class="chip pin">공지</span> ':''}${p.secret?'<span class="chip lock">비밀글</span> ':''}${esc(p.title)}</h3>
+  <div class="note" style="padding:0">${esc(p.orgName)} · ${esc(p.by)} · ${when(p.at)}${p.hidden?` · <b style="color:#b42318">운영 기관이 숨김${p.hideReason?`: ${esc(p.hideReason)}`:''}</b>`:''}</div>
+  ${p.board==='rec'?(p.kind==='rec'?`<div style="margin-top:8px"><b>${esc(p.botName)}</b> <span class="stars" aria-label="별점 ${p.rating}점">${stars(p.rating)}</span></div>`:'<div style="margin-top:8px"><span class="chip">이런 봇이 있었으면</span></div>'):''}
+  <div class="pbody">${esc(p.body)}</div>
+  <div class="acts">${p.board==='rec'&&!p.mine?`<button class="btn ghost" type="button" data-blike="${p.id}">${p.liked?'공감 취소':'공감'} ${p.likes}</button>`:''}${p.board==='rec'&&p.kind==='rec'&&!p.mine&&S.bots.some(b=>b.id===p.botId)?`<button class="btn ghost" type="button" data-binvite="${esc(p.botId)}">이 봇 초대하기</button>`:''}${p.mine?`<button class="btn ghost" type="button" data-bdel="${p.id}">지우기</button>`:''}</div>
+  <h4 class="dirh">${p.board==='qna'?'답변·댓글':'댓글'} ${p.replyList.length}</h4>
+  ${p.replyList.map(r=>`<div class="reply${r.admin?' adm':''}"><div class="note" style="padding:0"><b>${esc(r.orgName)}</b>${r.admin?'':` · ${esc(r.by)}`} · ${when(r.at)}</div><div class="pbody" style="margin:4px 0 0">${esc(r.body)}</div></div>`).join('')||`<p class="note" style="padding:0">${p.board==='qna'?'운영 기관 답변을 기다리고 있어요.':'아직 댓글이 없어요.'}</p>`}
+  ${p.canReply?`<textarea class="field" id="bReply" maxlength="1000" placeholder="${p.board==='qna'&&p.mine?'더 물어볼 것이 있으면 적어 주세요':'댓글'}" style="min-height:80px;margin-top:10px"></textarea><div class="acts"><button class="btn" type="button" id="bReplyGo">댓글 달기</button></div>`:''}<div class="docerr" id="bErr"></div>`;return}
+ if(BD.view==='write'){const w=BD.write,rec=BD.tab==='rec',R=D.recommendable||[];
+  M.innerHTML=`<button class="btn ghost" type="button" data-bback>← 목록</button>
+  <h3 style="margin:12px 0">${rec?'봇 추천 글쓰기':'질문하기'}</h3>
+  ${rec?`<div class="doctabs" style="margin-bottom:10px"><button type="button" data-bkind="rec" aria-pressed="${w.kind==='rec'}">이 봇 추천해요</button><button type="button" data-bkind="idea" aria-pressed="${w.kind==='idea'}">이런 봇이 있었으면</button></div>
+   ${w.kind==='rec'?(R.length?`<label class="note" style="padding:0">추천할 봇 (우리가 써 본 봇)<select class="field" id="bBot">${R.map(b=>`<option value="${esc(b.id)}"${w.botId===b.id?' selected':''}>${esc(b.name)}</option>`).join('')}</select></label>
+   <div class="note" style="padding:8px 0 4px">별점</div><div class="starpick" role="group" aria-label="별점">${[1,2,3,4,5].map(n=>`<button type="button" data-bstar="${n}" aria-pressed="${n<=w.rating}" aria-label="${n}점">★</button>`).join('')}</div>`:'<p class="docerr" style="padding:0">아직 써 본 봇이 없어요. 봇을 초대해 한 번 써 본 뒤 추천할 수 있어요.</p>'):''}`:''}
+  <input class="field" id="bTitle" maxlength="60" placeholder="${rec?(w.kind==='rec'?'한 줄 추천 (예: 보도자료 초안이 10분이면 나와요)':'원하는 봇 (예: 지원사업 공고 알림 봇)'):'질문 제목'}" value="${esc(w.title||'')}" style="margin-top:10px">
+  <textarea class="field" id="bBody" maxlength="2000" placeholder="${rec?(w.kind==='rec'?'어떤 일에 써 봤는지, 좋았던 점과 아쉬운 점':'어떤 일을 도와주면 좋을지'):'궁금한 점을 적어 주세요. 기업 정보·금액이 들어가면 비밀글로 두세요.'}" style="min-height:140px;margin-top:8px">${esc(w.body||'')}</textarea>
+  ${rec?'':`<label class="rad"><input type="checkbox" id="bSecret"${w.secret!==false?' checked':''}>비밀글 (우리 기업과 운영 기관만 봐요)</label>`}
+  <div class="acts"><button class="btn" type="button" id="bPost">올리기</button></div><div class="docerr" id="bErr"></div>`;return}
+ const st=D.recStats||{};
+ const top=BD.tab==='rec'?Object.entries(st).sort((a,b)=>b[1].avg*b[1].n-a[1].avg*a[1].n).slice(0,5):[];
+ M.innerHTML=`<div class="acts" style="margin:4px 0 10px"><button class="btn" type="button" id="bWrite">${BD.tab==='qna'?'질문하기':'봇 추천하기'}</button></div>
+ ${top.length?`<h4 class="dirh">많이 추천받은 봇</h4><div class="acts" style="margin-bottom:10px">${top.map(([id,x])=>`<span class="chip" style="padding:6px 10px;font-size:13px">${esc((S.bots.find(b=>b.id===id)||{}).name||'봇')} <span class="stars">★</span>${x.avg} · ${x.n}</span>`).join('')}</div>`:''}
+ ${D.posts.map(p=>`<button class="post" type="button" data-bopen="${p.id}"><b>${p.pinned?'<span class="chip pin">공지</span> ':''}${p.secret?'<span class="chip lock">비밀글</span> ':''}${p.hidden?'<span class="chip">숨김</span> ':''}${p.board==='rec'&&p.kind==='idea'?'<span class="chip">이런 봇</span> ':''}${esc(p.title)}</b><span class="meta">${p.board==='rec'&&p.kind==='rec'?`<span>${esc(p.botName)} <span class="stars">${stars(p.rating)}</span></span>`:''}<span>${esc(p.orgName)}${p.mine?' (우리)':''}</span><span>${when(p.at)}</span>${p.board==='qna'?(p.answered?'<span class="chip ans">답변 있음</span>':'<span class="chip">답변 대기</span>'):''}${p.replies?`<span>댓글 ${p.replies}</span>`:''}${p.likes?`<span>공감 ${p.likes}</span>`:''}</span></button>`).join('')||`<p class="note" style="padding:0">아직 글이 없어요.</p>`}`;
+}
+$('boardBtn').onclick=()=>openBoard();
+$('boardVeil').addEventListener('click',async e=>{const t=e.target.closest('button');if(!t)return;const d=t.dataset,err=x=>{const el=$('bErr');if(el)el.textContent=x||''};
+ if(d.btab){BD.tab=d.btab;BD.view='list';await boardRefresh();return}
+ if(d.bopen){BD.view='post';BD.id=d.bopen;await boardRefresh();return}
+ if(t.hasAttribute('data-bback')){BD.view='list';BD.id=null;await boardRefresh();return}
+ if(t.id==='bWrite'){BD.view='write';BD.write={kind:'rec',rating:5,secret:true};return renderBoard()}
+ const keep=()=>{if(!BD.write)return;const g=id=>$(id)?$(id).value:undefined;BD.write.title=g('bTitle');BD.write.body=g('bBody');if($('bBot'))BD.write.botId=$('bBot').value;if($('bSecret'))BD.write.secret=$('bSecret').checked};
+ if(d.bkind){keep();BD.write.kind=d.bkind;return renderBoard()}
+ if(d.bstar){keep();BD.write.rating=+d.bstar;return renderBoard()}
+ if(t.id==='bPost'){keep();t.disabled=true;const w=BD.write;const j=await api('/api/board/post',{board:BD.tab,title:w.title,body:w.body,secret:w.secret,kind:w.kind,botId:w.botId||($('bBot')&&$('bBot').value),rating:w.rating});t.disabled=false;if(j.error)return err(j.error);BD.view='post';BD.id=j.id;BD.write=null;await boardRefresh();return}
+ if(t.id==='bReplyGo'){t.disabled=true;const j=await api('/api/board/reply',{id:BD.id,body:$('bReply').value});t.disabled=false;if(j.error)return err(j.error);BD.post=j;return renderBoard()}
+ if(d.blike){await api('/api/board/like',{id:d.blike});await boardRefresh();return}
+ if(d.bdel){if(t.textContent!=='정말 지울까요?'){t.textContent='정말 지울까요?';return}await api('/api/board/delete',{id:d.bdel});BD.view='list';BD.id=null;await boardRefresh();return}
+ if(d.binvite){const r=room();if(r){const j=await api(`/api/rooms/${r.id}/invite`,{botId:d.binvite});if(j.error)return err(j.error);t.textContent=`"${r.name}" 방에 초대했어요`;t.disabled=true}return}
+});
+
 /* ===== 봇 마켓 ===== */
 const owTxt=o=>`${esc(o.orgName)}${o.name?` "${esc(o.name)}"`:''} 봇과 ${o.score?o.score+'% ':''}같아요. 쓸 때마다 요청당 ${o.royalty}토큰이 원작 기업에 가요.`;
 

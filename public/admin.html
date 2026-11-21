@@ -115,6 +115,11 @@ td{border-bottom:1px solid var(--line);padding:10px 6px;vertical-align:middle}
  <p class="lead" style="margin:0 0 10px">역할 지시문이 다른 기업이 먼저 만든 봇과 많이 겹치면 원작으로 연결해, 쓰일 때마다 원작 기업에 몫이 가요. 잘못 찾았으면 풀고, 못 찾은 복사는 직접 연결하세요.</p>
  <div id="copies"></div>
 
+ <h2>게시판 <span class="tag" id="qnaN" hidden></span></h2>
+ <p class="lead" style="margin:-6px 0 10px">기업의 Q&amp;A(비밀글 포함)에 답하고, 봇 추천 글을 관리해요. 비밀글은 쓴 기업과 운영 기관만 볼 수 있어요.</p>
+ <div class="inl" id="bFilter" style="margin-bottom:10px"><button class="btn sm" type="button" data-bf="wait">답변 대기 Q&amp;A</button><button class="btn ghost sm" type="button" data-bf="qna">전체 Q&amp;A</button><button class="btn ghost sm" type="button" data-bf="rec">봇 추천</button></div>
+ <div id="board"></div>
+
  <h2>사람 전문가</h2>
  <p class="lead" style="margin:-6px 0 14px" id="tgNote"></p>
  <form class="form" id="expForm">
@@ -147,12 +152,12 @@ function showLogin(m){$('main').hidden=true;$('login').hidden=false;if(es){es.cl
 async function load(){
  D=await api('/api/admin/state');
  $('login').hidden=true;$('main').hidden=false;
- if(!es){es=new EventSource('/api/events');let t;es.addEventListener('room',()=>{clearTimeout(t);t=setTimeout(()=>{const f=document.activeElement;if(f&&f.matches('input,select'))return;load().catch(()=>{})},800)})}
+ if(!es){es=new EventSource('/api/events');let t;es.addEventListener('board',()=>{clearTimeout(t);t=setTimeout(()=>{const f=document.activeElement;if(f&&f.matches('input,select,textarea'))return;load().catch(()=>{})},800)});es.addEventListener('room',()=>{clearTimeout(t);t=setTimeout(()=>{const f=document.activeElement;if(f&&f.matches('input,select,textarea'))return;load().catch(()=>{})},800)})}
  $('sWallet').textContent=n(D.orgs.reduce((a,o)=>a+o.wallet,0));
  $('sExpert').textContent=n(D.experts.reduce((a,x)=>a+x.balance,0));
  $('sCount').textContent=`${D.orgs.length} · ${D.experts.length} · ${D.orgs.filter(o=>o.unlimited&&o.unlimited.active).length}`;
  $('tgNote').textContent=D.telegram.enabled?`전문가는 텔레그램에서 @${D.telegram.username} 봇에게 등록코드를 보내 등록하고, /login 으로 프로필 페이지(/expert)에 들어가 시간당 토큰을 직접 정합니다. 단가를 정해야 기업 목록에 보입니다.`:'텔레그램 봇 토큰이 설정되지 않아 사람 전문가를 쓸 수 없어요.';
- renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderClaims();renderCopies();
+ renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderClaims();renderCopies();renderBoard();
 }
 const dstr=t=>new Date(t).toLocaleDateString('ko-KR',{month:'numeric',day:'numeric'});
 const tomorrow=()=>{const d=new Date(Date.now()+864e5+9*36e5);return d.toISOString().slice(0,10)};
@@ -184,6 +189,28 @@ function renderOrgs(){
  $('lf').value=D.orgs.some(o=>o.id===cur)?cur:'';
 }
 const MS={pending:'심사 대기',public:'공개 중',rejected:'거절됨'};
+let BF='wait';
+const wt=t=>new Date(t+9*36e5).toISOString().slice(5,16).replace('T',' ');
+function renderBoard(){
+ const P=D.posts||[],wait=P.filter(p=>p.board==='qna'&&!p.answered&&!p.hidden);$('qnaN').hidden=!wait.length;$('qnaN').textContent=`답변 대기 ${wait.length}`;
+ document.querySelectorAll('[data-bf]').forEach(b=>b.className='btn sm'+(b.dataset.bf===BF?'':' ghost'));
+ const L=BF==='wait'?wait:P.filter(p=>p.board===(BF==='rec'?'rec':'qna'));
+ $('board').innerHTML=L.length?L.map(p=>`<div class="card" data-post="${p.id}" style="margin-bottom:12px${p.board==='qna'&&!p.answered?';border-color:#f79009':''}"><div class="head"><h3>${p.pinned?'<span class="tag on">공지</span> ':''}${p.secret?'<span class="tag">비밀글</span> ':''}${p.hidden?'<span class="tag">숨김</span> ':''}${esc(p.title)}</h3><span class="msg">${esc(p.orgName)} · ${esc(p.by)} · ${wt(p.at)}</span></div>
+  ${p.board==='rec'?`<div class="msg">${p.kind==='rec'?`추천: <b>${esc(p.botName)}</b> ★${p.rating} · 공감 ${p.likes}`:'이런 봇이 있었으면'}</div>`:''}
+  <div style="white-space:pre-wrap;margin:6px 0 10px">${esc(p.body)}</div>
+  ${p.replyList.map(r=>`<div class="msg" style="border-top:1px solid var(--line);padding:6px 0"><b>${esc(r.orgName)}</b>${r.admin?'':` · ${esc(r.by)}`} · ${wt(r.at)}<div style="white-space:pre-wrap;color:var(--ink)">${esc(r.body)}</div></div>`).join('')}
+  <textarea class="field" data-ans maxlength="2000" placeholder="${p.board==='qna'?'운영 기관 답변':'운영 기관 댓글'}" style="width:100%;min-height:70px;margin-top:6px"></textarea>
+  <div class="inl"><button class="btn sm" type="button" data-pans>${p.board==='qna'?'답변 달기':'댓글 달기'}</button><button class="btn ghost sm" type="button" data-ppin>${p.pinned?'공지 내리기':'공지로 고정'}</button>${p.hidden?'<button class="btn ghost sm" type="button" data-punhide>다시 보이기</button>':'<input class="field" data-hreason placeholder="숨기는 이유" style="width:160px"><button class="btn ghost sm" type="button" data-phide>숨기기</button>'}<button class="btn ghost sm" type="button" data-pdel>삭제</button></div><div class="msg" data-msg></div></div>`).join(''):'<p class="empty">글이 없어요.</p>';
+}
+$('bFilter').addEventListener('click',e=>{const b=e.target.closest('[data-bf]');if(!b)return;BF=b.dataset.bf;renderBoard()});
+$('board').addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;const c=b.closest('[data-post]'),id=c.dataset.post,P=(D.posts||[]).find(x=>x.id===id);let j;
+ if(b.hasAttribute('data-pans'))j=await api(`/api/admin/board/${id}/reply`,{body:c.querySelector('[data-ans]').value});
+ else if(b.hasAttribute('data-ppin'))j=await api(`/api/admin/board/${id}/pin`,{pinned:!P.pinned});
+ else if(b.hasAttribute('data-phide'))j=await api(`/api/admin/board/${id}/hide`,{hidden:true,reason:c.querySelector('[data-hreason]').value});
+ else if(b.hasAttribute('data-punhide'))j=await api(`/api/admin/board/${id}/hide`,{hidden:false});
+ else if(b.hasAttribute('data-pdel')){if(!confirm2(b,'정말 삭제'))return;j=await api(`/api/admin/board/${id}/delete`,{})}
+ else return;
+ if(j&&j.error)return say(c.querySelector('[data-msg]'),j.error,1);load()});
 const CS={open:'결정 대기',discarded:'폐기함',linked:'원작으로 연결함',rejected:'기각함'};
 const dt=t=>t?new Date(t+9*36e5).toISOString().slice(0,10):'-';
 function renderClaims(){

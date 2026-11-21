@@ -66,6 +66,7 @@ if (!S.dmMap) S.dmMap = {};
 if (!S.expertLogins) S.expertLogins = {}; // 전문가 웹 로그인용 1회용 코드
 if (!S.expertGroups) S.expertGroups = {};
 if (!S.botCosts) S.botCosts = {};
+if (!S.posts) S.posts = [];     // 게시판 [{id,board:'qna'|'rec',orgId,by,at,title,body,secret,botId,rating,kind,likes:[orgId],replies:[],hidden,pinned}]
 if (!S.claims) S.claims = [];   // 원작 기업의 복사 신고 [{id,at,orgId,origBotId,targetBotId,targetText,want,reason,status,note,decidedAt}]
 if (!S.customBots) S.customBots = [];   // 봇 마켓: 기업이 직접 만든 봇           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
 // 요청당 토큰: 관리자 설정 > bots.js 기본값. 'summary'는 함께봇 문서 정리
@@ -410,8 +411,9 @@ async function runBot(room, botId, text, ctx = {}) {
   const r = await run();
   if (r.silent) return refundTokens(org, cost + share); // 일정 이야기가 아니었음: 조용히 넘어감
   if (r.error) { refundTokens(org, cost + share); return say(`${r.error}${cost + share ? ' (토큰은 쓰지 않았어요)' : ''}`); }
-  if (r.free) { refundTokens(org, cost + share); return say(r.text, { ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}) }); } // 질문·링크 안내는 무료
+  if (r.free) { org.botUse = org.botUse || {}; org.botUse[bot.id] = (org.botUse[bot.id] || 0) + 1; refundTokens(org, cost + share); return say(r.text, { ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}) }); } // 질문·링크 안내는 무료
   chargeRecord(org, cost, { botId: costId, botName: costName, roomId: room.id, roomName: room.name });
+  org.botUse = org.botUse || {}; org.botUse[bot.id] = (org.botUse[bot.id] || 0) + 1; // 봇 추천 게시판: 써 본 봇만 추천
   if (bot.custom) { const c = S.customBots.find(x => x.id === bot.id); if (c) { c.stats = c.stats || { uses: 0, earned: 0, byOrg: {} }; c.stats.uses++; c.stats.byOrg[org.id] = (c.stats.byOrg[org.id] || 0) + 1; } }
   if (share) payShare(org, cb, share, sh.type, room, sh.type === 'royalty' ? sh.origin : null);
   say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}) });
@@ -1322,6 +1324,26 @@ async function pollTelegram() {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const json = (res, code, obj, headers) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...(headers || {}) }); res.end(JSON.stringify(obj)); };
 const body = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(d || '{}')); } catch (_) { ok({}); } }); });
+// ---------- 게시판 (Q&A 비밀글 · 봇 추천) ----------
+// Q&A 비밀글: 쓴 기업과 운영 기관만. 공개 Q&A·봇 추천: 모든 기업. 운영 기관이 숨긴 글은 쓴 기업에만 (숨김 표시)
+const canSeePost = (org, p) => p.orgId === org.id || (!p.hidden && (p.board === 'rec' || !p.secret));
+const canReply = (org, p) => !p.hidden && (p.orgId === org.id || p.board === 'rec' || !p.secret);
+function botRecStats() {
+  const m = {};
+  for (const p of S.posts) if (p.board === 'rec' && p.kind === 'rec' && !p.hidden && p.botId) { const x = m[p.botId] || (m[p.botId] = { n: 0, sum: 0, likes: 0 }); x.n++; x.sum += p.rating; x.likes += p.likes.length; }
+  for (const k in m) m[k].avg = Math.round(m[k].sum / m[k].n * 10) / 10;
+  return m;
+}
+const botNameOf = id => { const b = botById(id); return b ? b.name : (((S.customBots.find(c => c.id === id) || {}).def) || {}).name || '없어진 봇'; };
+function postView(org, p, full) {
+  const o = orgById(p.orgId), mine = org && p.orgId === org.id;
+  const v = { id: p.id, board: p.board, title: p.title, at: p.at, by: p.by, orgName: o ? o.name : '', mine: !!mine, secret: !!p.secret, hidden: !!p.hidden, pinned: !!p.pinned, kind: p.kind, botId: p.botId, botName: p.botId ? botNameOf(p.botId) : '', rating: p.rating, likes: p.likes.length, liked: !!(org && p.likes.includes(org.id)), replies: p.replies.length, answered: p.replies.some(r => r.admin), lastAt: p.replies.length ? p.replies[p.replies.length - 1].at : p.at };
+  if (mine && p.hidden) v.hideReason = p.hideReason || '';
+  if (full) { v.body = p.body; v.replyList = p.replies.map(r => ({ id: r.id, at: r.at, by: r.admin ? '운영 기관' : r.by, orgName: r.admin ? '운영 기관' : (orgById(r.orgId) || {}).name || '', admin: !!r.admin, mine: !!(org && r.orgId === org.id), body: r.body })); v.canReply = org ? canReply(org, p) : true; }
+  return v;
+}
+const notifyOrg = (orgId, text) => { const r = S.rooms.find(x => x.orgId === orgId); if (r) addMsg(r, { from: 'sys', text }); };
+
 const publicBots = org => [
   ...BOTS.map(({ role, ...b }) => ({ ...b, cost: b.soon ? null : costOf(b.id) })),
   ...(org ? S.customBots.filter(c => canUseBot(org, c.id)).map(c => {
@@ -1329,7 +1351,7 @@ const publicBots = org => [
     const base = o.kind === 'site' ? costOf('site') : o.kind === 'ir' ? costOf('ir') : o.kind === 'sched' ? costOf('sched') : o.kind === 'todo' ? costOf('todo') : costOf('custom');
     return { id: c.id, name: o.name, short: o.short, color: o.color, tag: o.tag, desc: o.desc, hello: o.hello, quick: o.quick, kind: o.kind, ppt: o.ppt, custom: true, mine, ownerName: (orgById(c.orgId) || {}).name, cost: base + shareFor(org, c).amount, origin: c.derivedFrom ? (o2 => o2 ? { orgName: (orgById(o2.orgId) || {}).name, name: o2.rec && o2.rec.publicStatus === 'public' ? o2.name : '', royalty: o2.orgId === org.id ? 0 : royaltyOf(o2) } : null)(originOf(c)) : null, pricing: mine ? c.pricing || {} : { perUse: (c.pricing || {}).perUse, passDays: (c.pricing || {}).passDays, passPrice: (c.pricing || {}).passPrice }, passUntil: pass && pass > Date.now() ? pass : null };
   }) : [])
-];
+].map((b, _, __, st = botRecStats()[b.id]) => st ? { ...b, rec: { n: st.n, avg: st.avg, likes: st.likes } } : b);
 const publicExperts = () => S.experts.filter(e => e.tgChatId && e.rate).map(e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, color: e.color, linked: true }));
 const expertProfile = e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, balance: e.balance });
 const orgPublic = o => ({ id: o.id, name: o.name, mission: o.mission, product: o.product, target: o.target, tone: o.tone });
@@ -1354,6 +1376,7 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
+    posts: S.posts.slice().sort((a, b) => b.at - a.at).slice(0, 200).map(x => ({ ...postView(null, x, true), hideReason: x.hideReason || '', canReply: true })),
     claims: S.claims.slice().sort((x, y) => (x.status === 'open' ? 0 : 1) - (y.status === 'open' ? 0 : 1) || y.at - x.at).slice(0, 50).map(cl => {
       const o = S.customBots.find(x => x.id === cl.origBotId), t = cl.targetBotId && S.customBots.find(x => x.id === cl.targetBotId);
       const bv = c => c && { id: c.id, name: c.def ? c.def.name : '', orgName: (orgById(c.orgId) || {}).name, role: c.def ? c.def.role : '', createdAt: c.createdAt, publicStatus: c.publicStatus, discarded: !!c.discarded, origin: c.derivedFrom ? { orgName: (orgById(c.derivedFrom.orgId) || {}).name, name: c.derivedFrom.name } : null };
@@ -1437,6 +1460,19 @@ async function adminApi(req, res, p, sess) {
     else S.users = S.users.filter(x => x !== u);
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
+  }
+  // 게시판 관리: 답변 · 숨기기 · 고정 · 삭제
+  const pm = p.match(/^\/api\/admin\/board\/(\w+)\/(reply|hide|pin|delete)$/);
+  if (pm) {
+    const x = S.posts.find(y => y.id === pm[1]); if (!x) return BAD(res, '없는 글이에요', 404);
+    if (pm[2] === 'reply') {
+      const text = String(b.body == null ? '' : b.body).replace(/\r/g, '').trim().slice(0, 2000); if (text.length < 2) return BAD(res, '답변을 적어 주세요');
+      x.replies.push({ id: newId('r'), at: Date.now(), orgId: null, admin: true, by: '운영 기관', body: text }); x.unreadAnswer = true;
+      notifyOrg(x.orgId, `운영 기관이 ${x.board === 'qna' ? `${x.secret ? '비밀글 ' : ''}질문` : '게시판 글'} "${x.title}"에 답했어요. "게시판"에서 확인하세요.`);
+    } else if (pm[2] === 'hide') { x.hidden = !!b.hidden; x.hideReason = x.hidden ? str(b.reason, 100) : ''; if (x.hidden) notifyOrg(x.orgId, `운영 기관이 게시판 글 "${x.title}"을(를) 숨겼어요${x.hideReason ? `: ${x.hideReason}` : '.'}`); }
+    else if (pm[2] === 'pin') x.pinned = !!b.pinned;
+    else S.posts = S.posts.filter(y => y !== x);
+    save(); emit('board', { board: x.board }, '*'); return json(res, 200, { ok: true });
   }
   // 원작 기업의 요구 결정: 폐기(discard) · 원작으로 연결(link) · 기각(reject)
   const cm = p.match(/^\/api\/admin\/claims\/(\w+)$/);
@@ -1608,8 +1644,71 @@ async function userApi(req, res, p, sess) {
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
       sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null,
+      boardUnread: S.posts.filter(x => x.orgId === org.id && x.unreadAnswer).length,
       todo: org.todo || todoRooms(org).length ? (() => { const td = ensureTodo(org), t = todayKst(), nx = TODO.upcoming(td, t); return { url: todoUrl(org), editUrl: todoEditUrl(org), v: td.v, next: nx, left: SCHED.diffDays(t, nx), days: td.cycle.days, count: td.items.filter(x => x.status === 'active').length }; })() : null
     });
+  // ----- 게시판 -----
+  if (p.startsWith('/api/board')) {
+    const qs = new URL(req.url, 'http://x').searchParams;
+    if (p === '/api/board' && req.method === 'GET') {
+      const board = qs.get('board') === 'rec' ? 'rec' : 'qna';
+      const list = S.posts.filter(x => x.board === board && canSeePost(org, x)).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.at - a.at).slice(0, 200).map(x => postView(org, x));
+      const used = Object.keys(org.botUse || {}).filter(id => canUseBot(org, id) && !(S.customBots.find(c => c.id === id && c.orgId === org.id)));
+      return json(res, 200, { posts: list, recStats: board === 'rec' ? botRecStats() : undefined, recommendable: board === 'rec' ? used.map(id => ({ id, name: botNameOf(id) })) : undefined });
+    }
+    if (p === '/api/board/post' && req.method === 'GET') {
+      const x = S.posts.find(y => y.id === qs.get('id'));
+      if (!x || !canSeePost(org, x)) return BAD(res, '없는 글이거나 볼 수 없는 글이에요', 404);
+      if (x.orgId === org.id && x.unreadAnswer) { x.unreadAnswer = false; save(); }
+      return json(res, 200, postView(org, x, true));
+    }
+    if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
+    const b = await body(req);
+    const today = S.posts.filter(x => x.orgId === org.id && Date.now() - x.at < 864e5).length;
+    if (p === '/api/board/post') {
+      const board = b.board === 'rec' ? 'rec' : b.board === 'qna' ? 'qna' : null; if (!board) return BAD(res, '게시판을 골라 주세요');
+      if (today >= 20) return BAD(res, '하루에 20개까지 쓸 수 있어요');
+      const title = str(b.title, 60), text = String(b.body == null ? '' : b.body).replace(/\r/g, '').trim().slice(0, 2000);
+      if (!title) return BAD(res, '제목을 적어 주세요');
+      if (text.length < 5) return BAD(res, '내용을 5자 이상 적어 주세요');
+      const x = { id: newId('p'), board, orgId: org.id, by: user.name, at: Date.now(), title, body: text, likes: [], replies: [], hidden: false, pinned: false };
+      if (board === 'qna') x.secret = b.secret !== false;
+      else {
+        x.kind = b.kind === 'idea' ? 'idea' : 'rec';
+        if (x.kind === 'rec') {
+          const id = str(b.botId, 40);
+          if (!canUseBot(org, id)) return BAD(res, '추천할 봇을 골라 주세요');
+          if (S.customBots.some(c => c.id === id && c.orgId === org.id)) return BAD(res, '우리 기업이 만든 봇은 추천할 수 없어요');
+          if (!((org.botUse || {})[id] > 0)) return BAD(res, '직접 써 본 봇만 추천할 수 있어요');
+          const rating = Number(b.rating); if (!Number.isInteger(rating) || rating < 1 || rating > 5) return BAD(res, '별점을 1~5로 골라 주세요');
+          if (S.posts.some(y => y.board === 'rec' && y.kind === 'rec' && y.botId === id && y.orgId === org.id && !y.hidden)) return BAD(res, '이 봇은 이미 추천했어요. 쓴 글에 댓글로 더해 주세요');
+          x.botId = id; x.rating = rating;
+        }
+      }
+      S.posts.push(x); save(); emit('board', { board }, '*');
+      return json(res, 200, { ok: true, id: x.id });
+    }
+    const x = S.posts.find(y => y.id === b.id);
+    if (!x || !canSeePost(org, x)) return BAD(res, '없는 글이거나 볼 수 없는 글이에요', 404);
+    if (p === '/api/board/reply') {
+      if (!canReply(org, x)) return BAD(res, '이 글에는 댓글을 달 수 없어요', 403);
+      const text = String(b.body == null ? '' : b.body).replace(/\r/g, '').trim().slice(0, 1000); if (text.length < 2) return BAD(res, '댓글을 적어 주세요');
+      if (x.replies.length >= 200) return BAD(res, '댓글이 너무 많아요');
+      x.replies.push({ id: newId('r'), at: Date.now(), orgId: org.id, by: user.name, body: text });
+      if (x.orgId !== org.id) notifyOrg(x.orgId, `게시판 글 "${x.title}"에 ${org.name}이(가) 댓글을 달았어요.`);
+      save(); emit('board', { board: x.board, id: x.id }, '*'); return json(res, 200, postView(org, x, true));
+    }
+    if (p === '/api/board/like') {
+      if (x.board !== 'rec' || x.orgId === org.id) return BAD(res, '공감할 수 없는 글이에요');
+      const i = x.likes.indexOf(org.id); if (i >= 0) x.likes.splice(i, 1); else x.likes.push(org.id);
+      save(); emit('board', { board: x.board }, '*'); return json(res, 200, { likes: x.likes.length, liked: i < 0 });
+    }
+    if (p === '/api/board/delete') {
+      if (x.orgId !== org.id) return BAD(res, '우리 기업이 쓴 글만 지울 수 있어요', 403);
+      S.posts = S.posts.filter(y => y !== x); save(); emit('board', { board: x.board }, '*'); return json(res, 200, { ok: true });
+    }
+    return BAD(res, '없는 기능이에요', 404);
+  }
   // ----- 봇 마켓 (직접 만든 봇) -----
   if (p.startsWith('/api/bots')) {
     // 올리는 기업에게 보여 줄 원작 정보 (원작 봇 이름은 공개된 봇일 때만)
