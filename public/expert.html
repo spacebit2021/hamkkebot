@@ -53,6 +53,12 @@ table{width:100%;border-collapse:collapse;font-size:15px}
 th{text-align:left;font-size:13px;color:var(--mute);font-weight:500;border-bottom:1.5px solid var(--line);padding:8px 6px}
 td{border-bottom:1px solid var(--line);padding:10px 6px}
 .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.irlist{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.irlist button{min-height:44px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);padding:6px 14px;text-align:left;cursor:pointer}
+.irlist button[aria-pressed=true]{border-color:var(--hx);box-shadow:0 0 0 2px var(--hx) inset}
+.irlist small{display:block;color:var(--mute);font-size:12px}
+.toast{position:sticky;top:10px;z-index:3;background:var(--hx);color:#fff;border-radius:12px;padding:10px 14px;font-weight:700;margin-bottom:10px}
+.irhead{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline;margin-bottom:10px}
 .login{max-width:400px;margin:12vh auto;padding:0 16px}
 .empty{color:var(--mute);padding:12px 6px}
 @media(max-width:760px){.cols{grid-template-columns:minmax(0,1fr)}.preview{position:static;order:-1}}
@@ -77,6 +83,13 @@ td{border-bottom:1px solid var(--line);padding:10px 6px}
   <div><h1>전문가 프로필</h1><p class="lead">기업은 이 프로필과 시간당 토큰을 보고 전문가를 골라 호출해요.</p></div>
   <button class="btn ghost" id="logout" type="button">로그아웃</button>
  </header>
+ <section id="irSec" hidden>
+  <h2>IR 자료 검토</h2>
+  <p class="lead" style="margin:-6px 0 12px">기업이 검토를 부탁했거나 상담 중인 기업의 IR 자료예요. 장별로 코멘트를 남기면 기업과 IR 봇이 반영해요. 새 버전은 이 화면에 바로 나타나요.</p>
+  <div id="irList" class="irlist"></div>
+  <div id="irToast" class="toast" hidden></div>
+  <div id="irBox"></div>
+ </section>
  <div class="cols">
   <form id="pf">
    <label for="pName">이름</label><input class="field" id="pName" required maxlength="30">
@@ -103,6 +116,7 @@ td{border-bottom:1px solid var(--line);padding:10px 6px}
  <table class="stack"><thead><tr><th>일시</th><th>구분</th><th>기업</th><th class="num">상담 시간</th><th class="num">토큰</th></tr></thead><tbody id="rec"></tbody></table>
 </div>
 
+<script src="/irview.js"></script>
 <script>
 {
 const $=id=>document.getElementById(id);
@@ -129,17 +143,38 @@ async function load(){
  const T={pay:'상담 토큰 받음',payout:'운영자 정산'};
  $('rec').innerHTML=d.received.length?d.received.map(l=>`<tr><td>${when(l.at)}</td><td>${T[l.type]||l.type}</td><td>${esc(l.orgName)}${l.memo?` <span style="color:var(--mute)">“${esc(l.memo)}”</span>`:''}</td><td class="num">${l.minutes?l.minutes+'분':''}</td><td class="num">${l.type==='payout'?'−':'+'}${l.amount.toLocaleString()}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">아직 기록이 없어요.</td></tr>';
  preview();
+ loadIr();
 }
+/* IR 검토 */
+let IRS=[], irOrg=null, irN=null;
+async function loadIr(){
+ const d=await api('/api/expert/ir');IRS=d.orgs;$('irSec').hidden=!IRS.length;
+ const h=location.hash.match(/^#ir-(\w+)$/);if(!irOrg)irOrg=(h&&IRS.some(o=>o.orgId===h[1]))?h[1]:IRS[0]&&IRS[0].orgId;
+ $('irList').innerHTML=IRS.map(o=>`<button type="button" data-iro="${o.orgId}" aria-pressed="${o.orgId===irOrg}"><b>${esc(o.orgName)}</b> · v${o.n}<small>${esc(o.title)}${o.final?` · v${o.final} 최종`:''}${o.open?` · 반영 전 코멘트 ${o.open}`:''}</small></button>`).join('');
+ if(irOrg)viewIr();
+}
+async function viewIr(){
+ const d=await api('/api/expert/ir/view?org='+irOrg);if(d.error){$('irBox').innerHTML=`<p class="lead">${esc(d.error)}</p>`;return}
+ if(irN&&d.n!==irN){$('irToast').hidden=false;$('irToast').textContent=`v${d.n}로 업데이트됐어요 · ${d.note||''}`;setTimeout(()=>$('irToast').hidden=true,6000)}
+ irN=d.n;
+ const keep={};document.querySelectorAll('[data-irc-text]').forEach(t=>{if(t.value)keep[t.dataset.ircText]=t.value});
+ $('irBox').innerHTML=`<div class="irhead"><b>${esc(d.orgName)} · v${d.n} · ${esc(d.outline.title)}</b><span class="lead" style="margin:0">${d.final?`v${d.final} 최종 확정됨`:'검토 중'}</span></div>${IRView.render(d.outline,{org:d.orgName,comments:d.comments})}`;
+ for(const k in keep){const t=document.querySelector(`[data-irc-text="${k}"]`);if(t)t.value=keep[k]}
+}
+$('irList').addEventListener('click',e=>{const b=e.target.closest('[data-iro]');if(!b)return;irOrg=b.dataset.iro;irN=null;history.replaceState(null,'','#ir-'+irOrg);loadIr()});
+$('irBox').addEventListener('click',async e=>{const b=e.target.closest('[data-irc-send]');if(!b)return;const i=b.dataset.ircSend,ta=document.querySelector(`[data-irc-text="${i}"]`);
+ b.disabled=true;const j=await api('/api/expert/ir/comment',{orgId:irOrg,slide:+i,text:ta.value});b.disabled=false;if(j.error){ta.placeholder=j.error;return}ta.value='';viewIr()});
+let es=null;function live(){if(es)return;try{es=new EventSource('/api/events');let t;es.addEventListener('irx',()=>{clearTimeout(t);t=setTimeout(()=>{const f=document.activeElement;loadIr()},400)})}catch(e){}}
 $('pf').addEventListener('input',preview);
 $('pf').addEventListener('submit',async e=>{e.preventDefault();
  const j=await api('/api/expert/profile',{name:$('pName').value,field:$('pField').value,desc:$('pDesc').value,career:$('pCareer').value,hours:$('pHours').value,rate:+$('pRate').value,available:$('pAvail').checked});
  $('pMsg').className='msg'+(j.error?' err':'');$('pMsg').textContent=j.error||'저장했어요. 기업 목록에 바로 반영돼요. 진행 중인 상담은 호출 때 단가가 그대로 적용돼요.';
 });
-$('loginForm').addEventListener('submit',async e=>{e.preventDefault();const j=await api('/api/expert/login',{code:$('code').value.trim()});if(j.error){$('loginMsg').textContent=j.error;return}history.replaceState(null,'','/expert');load().catch(()=>{})});
+$('loginForm').addEventListener('submit',async e=>{e.preventDefault();const j=await api('/api/expert/login',{code:$('code').value.trim()});if(j.error){$('loginMsg').textContent=j.error;return}history.replaceState(null,'','/expert'+location.hash);load().then(live).catch(()=>{})});
 $('logout').onclick=async()=>{await api('/api/expert/logout',{}).catch(()=>{});showLogin('로그아웃했어요.')};
 const qc=new URLSearchParams(location.search).get('code');
 if(qc){$('code').value=qc}
-load().catch(()=>{if(qc)$('loginForm').requestSubmit()});
+load().then(live).catch(()=>{if(qc)$('loginForm').requestSubmit()});
 }
 </script>
 </body>

@@ -13,9 +13,9 @@ const PALETTES = {
   sunflower: { dark: '4A3A0A', accent: 'B7860B', tint: 'FBF3DC', ink: '2A220A', soft: 'EED89A' }
 };
 const FONT = 'Malgun Gothic'; // 한국어 Windows 기본 글꼴 (Mac PowerPoint는 비슷한 한글 글꼴로 바꿔 보여 줌)
-const KINDS = ['title', 'bullets', 'cards', 'steps', 'message', 'closing'];
+const KINDS = ['title', 'bullets', 'cards', 'steps', 'message', 'closing', 'stats', 'table'];
 // 슬라이드 종류별 글자 수 상한 (넘치면 자르고 … 표시)
-const LIM = { title: 28, subtitle: 50, bullet: 60, head: 16, text: 64, highlight: 22, message: 70, caption: 60, note: 600 };
+const LIM = { title: 28, subtitle: 50, bullet: 60, head: 16, text: 64, highlight: 22, message: 70, caption: 60, note: 600, value: 12, label: 26, col: 14, cell: 26 };
 
 const cut = (s, n) => { s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s; };
 
@@ -45,6 +45,16 @@ function normalizeOutline(raw) {
       if (x.items.length < 2) continue;
     }
     if (kind === 'message' || kind === 'closing') { x.message = cut(s.message, LIM.message); x.caption = cut(s.caption, LIM.caption); }
+    if (kind === 'stats') { // 큰 숫자 2~4개 (숫자는 기업 자료에 있는 것만 쓰도록 봇에 지시)
+      x.stats = (Array.isArray(s.stats) ? s.stats : []).map(t => ({ value: cut(t && t.value, LIM.value), label: cut(t && t.label, LIM.label) })).filter(t => t.value).slice(0, 4);
+      x.caption = cut(s.caption, LIM.caption);
+      if (x.stats.length < 2) continue;
+    }
+    if (kind === 'table') { // 표: 열 2~5개, 행 1~6개
+      x.columns = (Array.isArray(s.columns) ? s.columns : []).map(c => cut(c, LIM.col)).slice(0, 5);
+      x.rows = (Array.isArray(s.rows) ? s.rows : []).filter(Array.isArray).slice(0, 6).map(r => x.columns.map((_, i) => cut(r[i], LIM.cell)));
+      if (x.columns.length < 2 || !x.rows.length) continue;
+    }
     slides.push(x);
   }
   if (slides.length < 3) return { error: '슬라이드가 너무 적어요 (3장 이상 필요)' };
@@ -127,6 +137,23 @@ async function buildDeck(outline, orgName) {
         sl.addText(it.head, { x, y: 3.15, w: cw, h: 0.8, fontFace: FONT, fontSize: 18, bold: true, color: P.dark, align: 'center', valign: 'top', margin: 0, isTextBox: true });
         sl.addText(it.text, { x: x + 0.1, y: 3.95, w: cw - 0.2, h: 2.2, fontFace: FONT, fontSize: n === 5 ? 14 : 15, color: P.ink, valign: 'top', margin: 0, isTextBox: true });
       });
+    } else if (s.kind === 'stats') {
+      sl = content(s);
+      const n = s.stats.length, gap = 0.35, cw = (W - 2 * M - gap * (n - 1)) / n;
+      s.stats.forEach((t, i) => {
+        const x = M + i * (cw + gap);
+        sl.addShape(pres.shapes.ROUNDED_RECTANGLE, { x, y: 2.0, w: cw, h: 3.2, fill: { color: P.tint }, line: { color: P.tint }, rectRadius: 0.18, objectName: `숫자 카드 ${i + 1}` });
+        // 글자 수와 카드 폭으로 크기를 정함 (한글 한 글자 ≈ 글자 크기 1pt당 0.0139in)
+        const len = [...t.value].length, maxByWidth = Math.floor(((cw - 0.6) / Math.max(len, 1)) / 0.0139 * 0.92);
+        sl.addText(t.value, { x: x + 0.3, y: 2.45, w: cw - 0.6, h: 1.3, fontFace: FONT, fontSize: Math.max(20, Math.min(n === 4 ? 40 : 48, maxByWidth)), bold: true, color: P.accent, valign: 'middle', margin: 0, isTextBox: true });
+        sl.addText(t.label, { x: x + 0.3, y: 3.85, w: cw - 0.6, h: 1.1, fontFace: FONT, fontSize: 16, color: P.ink, valign: 'top', margin: 0, isTextBox: true });
+      });
+      if (s.caption) sl.addText(s.caption, { x: M, y: 5.6, w: W - 2 * M, h: 0.5, fontFace: FONT, fontSize: 13, color: '6B6B6B', margin: 0, isTextBox: true });
+    } else if (s.kind === 'table') {
+      sl = content(s);
+      const head = s.columns.map(c => ({ text: c, options: { bold: true, color: 'FFFFFF', fill: { color: P.accent } } }));
+      const body = s.rows.map((r, ri) => r.map(c => ({ text: c, options: { color: P.ink, fill: { color: ri % 2 ? 'FFFFFF' : P.tint } } })));
+      sl.addTable([head, ...body], { x: M, y: 1.8, w: W - 2 * M, colW: Array(s.columns.length).fill((W - 2 * M) / s.columns.length), fontFace: FONT, fontSize: s.rows.length > 4 ? 14 : 16, border: { type: 'solid', pt: 1, color: 'FFFFFF' }, valign: 'middle', margin: 0.08, rowH: 0.62 });
     } else if (s.kind === 'message') {
       sl = pres.addSlide({ masterName: 'HB_TINT' });
       numCircle(sl, '“', W / 2 - 0.45, 1.2, 0.9, P.accent, 'FFFFFF');

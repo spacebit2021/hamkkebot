@@ -263,20 +263,29 @@ async function askClaude(bot, room, text) {
 async function runBot(room, botId, text) {
   const bot = botById(botId);
   if (!bot) return;
-  const org = orgById(room.orgId), isDeck = !!bot.ppt && PPT_RE.test(text), cost = costOf(isDeck ? `${bot.id}_ppt` : bot.id);
+  const org = orgById(room.orgId);
+  // 봇 종류·요청에 따라 실행할 일과 토큰 항목을 정함
+  let costId = bot.id, run;
+  const isDeck = !!bot.ppt && PPT_RE.test(text);
+  if (bot.kind === 'site') run = () => runSiteBot(bot, room, org, text);
+  else if (bot.kind === 'ir') { const mode = irMode(org, text); costId = mode === 'create' ? 'ir' : mode === 'vc' ? 'ir_vc' : 'ir_update'; run = () => runIrBot(bot, room, org, text, mode); }
+  else if (isDeck) { costId = `${bot.id}_ppt`; run = () => runDeckBot(bot, room, org, text); }
+  else run = () => askClaude(bot, room, text);
+  const cost = costOf(costId), costName = (COST_ITEMS().find(c => c.id === costId) || {}).name || bot.name;
   const say = (t, extra = {}) => { addMsg(room, { from: bot.id, text: t, ...extra }); if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${extra.tgText || t}`); };
   if (!ANTHROPIC_API_KEY) return say('서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.');
   if (!reserveTokens(org, cost)) {
-    addMsg(room, { from: 'sys', text: `${bot.name}${isDeck ? ' PPT 만들기' : ''}은(는) 요청당 ${cost}토큰을 써요. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
+    addMsg(room, { from: 'sys', text: `${costName}은(는) 요청당 ${cost}토큰을 써요. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
     if (room.tgChatId) tgSend(room.tgChatId, `${bot.name}: 토큰 잔액이 부족해요 (필요 ${cost}, 잔액 ${org.wallet}).`);
     return;
   }
   emit('typing', { roomId: room.id, botId }, room.orgId);
   if (room.tgChatId) tg('sendChatAction', { chat_id: room.tgChatId, action: 'typing' });
-  const r = bot.kind === 'site' ? await runSiteBot(bot, room, org, text) : isDeck ? await runDeckBot(bot, room, org, text) : await askClaude(bot, room, text);
+  const r = await run();
   if (r.error) { refundTokens(org, cost); return say(`${r.error}${cost ? ' (토큰은 쓰지 않았어요)' : ''}`); }
-  chargeRecord(org, cost, { botId: isDeck ? `${bot.id}_ppt` : bot.id, botName: isDeck ? `${bot.name} PPT` : bot.name, roomId: room.id, roomName: room.name });
-  say(r.text, { cost, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}) });
+  chargeRecord(org, cost, { botId: costId, botName: costName, roomId: room.id, roomName: room.name });
+  say(r.text, { cost, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}) });
+  if (r.after) r.after();
   if (r.deck && room.tgChatId) { const d = deckById(org, r.deck.id); if (d) tgSendDoc(room.tgChatId, deckFileName(org, d), await DECK.buildDeck(d.outline, org.name), `${d.title} (PPT v${d.n})`, PPTX_MIME); }
 }
 
@@ -361,6 +370,166 @@ async function runDeckBot(bot, room, org, text) {
     text: `PPT v${d.n} "${d.title}" ${n.outline.slides.length}장을 만들었어요. (기업 정보 문서 v${docV.n} 기준, 발표자 메모 포함)\n\n${list}${checks}\n\n고칠 점을 말해 주면 이 PPT를 바탕으로 새 버전을 만들어요.`,
     deck: { id: d.id, n: d.n, title: d.title, count: n.outline.slides.length },
     tgText: `PPT v${d.n} "${d.title}" ${n.outline.slides.length}장을 만들었어요. 파일을 함께 보내요.${checks.replace(/\*\*/g, '')}`
+  };
+}
+
+// ---------- IR 봇 ----------
+// org.ir = { versions:[{id,n,at,outline,note,request}], comments:[{id,versionN,slide,slideTitle,text,by,at,status,reply}], final:{id,n,at}|null, reviewers:[expertId], vcs:[{at,request,items,dropped,note}] }
+const ensureIr = org => org.ir || (org.ir = { versions: [], comments: [], final: null, reviewers: [], vcs: [] });
+const irLatest = org => { const v = ensureIr(org).versions; return v[v.length - 1]; };
+const VC_RE = /\bvc\b|투자사|벤처\s*캐피|투자자|액셀러레이터|임팩트\s*투자|투자\s*기관/i;
+function irMode(org, text) {
+  if (VC_RE.test(text) && /찾|검색|추천|리스트|목록|알려/.test(text)) return 'vc';
+  if (!irLatest(org) || /새로\s*만들|처음부터/.test(text)) return 'create';
+  return 'update';
+}
+const IR_SPEC = `
+[IR 자료 만들기]
+투자자용 IR 자료(10~14장) 개요를 JSON 하나로만 출력하세요. JSON 앞뒤에 다른 글이나 코드 블록 표시를 쓰지 마세요.
+{"title": "IR 자료 제목", "palette": "navy|teal|forest|terracotta|berry|sunflower", "slides": [...], "checks": ["기업이 확인할 것", ...], "resolved": [{"id": "코멘트 id", "reply": "어떻게 반영했는지 한 줄"}]}
+- 권장 흐름: 표지(title) → 한 줄 요약(message) → 문제(bullets) → 해결·제품(cards) → 시장(stats 또는 bullets) → 비즈니스 모델(steps 또는 cards) → 성과·트랙션(stats) → 경쟁 비교(table) → 소셜 임팩트(cards 또는 stats) → 팀(cards) → 재무 계획(table) → 투자 유치 계획(bullets: 금액·용도·시기) → 마무리(closing). 정보가 전혀 없는 장은 빼도 됩니다.
+- 슬라이드 종류(kind)와 칸:
+  title {title, subtitle} / message {title, message, caption} / bullets {title, bullets: 2~5개, highlight}
+  cards {title, items: 2~4개 [{head, text}]} / steps {title, items: 3~5개 [{head, text}]}
+  stats {title, stats: 2~4개 [{value, label}], caption} — value는 짧은 숫자·단위 (예: "월 200개")
+  table {title, columns: 2~5개, rows: 1~6줄 (각 줄은 columns 수만큼)} / closing {title, message, caption}
+- 모든 슬라이드에 note(발표자 메모 2~3문장).
+- 글자 수 상한: title 24자, subtitle 45자, bullet 50자, head 12자, text 50자, highlight 18자, message 60자, value 10자, label 22자, 표 칸 22자.
+- 숫자(시장 규모, 매출, 고객 수, 성장률, 투자 금액, 기업가치)는 [우리 기업]이나 코멘트에 있는 것만 쓰세요. 없으면 그 자리에 "[확인 필요: 무엇]"을 그대로 쓰고 checks에도 적으세요(최대 3개). 시장 규모를 추정해서 만들지 마세요.
+- [반영할 코멘트]가 있으면 반영하고, 반영한 것만 resolved에 id와 반영 내용을 한 줄로 적으세요. 사실 확인이 필요해 반영하지 못한 코멘트는 resolved에 넣지 마세요.
+- [직전 IR 개요]가 있으면 그것을 바탕으로 요청·코멘트에 해당하는 부분만 바꾸세요.`;
+const irAccess = (ex, org) => !!(ex && org && org.ir && (org.ir.reviewers.includes(ex.id) || S.rooms.some(r => r.orgId === org.id && (r.humans || []).includes(ex.id))));
+const irOrgsFor = ex => S.orgs.filter(o => o.ir && o.ir.versions.length && irAccess(ex, o));
+const emitIrx = org => { for (const e of S.experts) if (irAccess(e, org)) emit('irx', { orgId: org.id }, 'expert:' + e.id); };
+const irRoom = org => S.rooms.find(r => r.orgId === org.id && r.bots.includes('ir')) || S.rooms.find(r => r.orgId === org.id);
+// 전문가 페이지로 바로 들어가는 1회용 로그인 코드 (10분)
+function expertLoginCode(ex) {
+  const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+  S.expertLogins[code] = { expertId: ex.id, exp: Date.now() + 10 * 60000 }; save();
+  return code;
+}
+const expertLink = (ex, hash) => { const code = expertLoginCode(ex); return PUBLIC_URL ? `${PUBLIC_URL.replace(/\/$/, '')}/expert?code=${code}${hash ? '#' + hash : ''}` : `웹의 /expert 페이지에서 코드 ${code} 입력 (10분 안에)`; };
+async function notifyIrExperts(org, text, only) {
+  if (!org.ir) return;
+  const exs = S.experts.filter(e => e.tgChatId && irAccess(e, org) && (!only || only.includes(e.id)));
+  for (const e of exs) {
+    const j = await tg('sendMessage', { chat_id: e.tgChatId, text: `[${org.name} IR]\n${text}\n\n보기·코멘트: ${expertLink(e, 'ir-' + org.id)}\n텔레그램에서 바로 코멘트: 이 메시지에 답장으로 /irc 장번호 내용` });
+    if (j && j.ok) { (S.irMap = S.irMap || {})[`${e.tgChatId}:${j.result.message_id}`] = org.id; save(); }
+  }
+}
+function addIrComment(org, slide, text, by) {
+  const ir = ensureIr(org), v = irLatest(org);
+  if (!v) return { error: '아직 IR 자료가 없어요' };
+  const i = Number(slide);
+  if (!Number.isInteger(i) || i < 0 || i >= v.outline.slides.length) return { error: `장 번호는 1~${v.outline.slides.length} 사이로 적어 주세요` };
+  const t = str(text, 500); if (!t) return { error: '코멘트 내용을 적어 주세요' };
+  const c = { id: newId('c'), versionN: v.n, slide: i, slideTitle: v.outline.slides[i].title, text: t, by, at: Date.now(), status: 'open', reply: '' };
+  ir.comments.push(c); if (ir.comments.length > 500) ir.comments.splice(0, ir.comments.length - 500);
+  save(); emit('ir', {}, org.id); emitIrx(org);
+  const room = irRoom(org);
+  if (room && by.kind === 'expert') addMsg(room, { from: 'sys', text: `${by.name} 전문가가 IR ${i + 1}장 "${c.slideTitle}"에 코멘트를 남겼어요. IR 봇에게 "코멘트 반영"을 요청하면 고쳐요.` });
+  return { comment: c };
+}
+// 텔레그램: /ir — 볼 수 있는 IR 자료 링크, /irc 장번호 내용 — 코멘트
+async function handleIrCmd(ex, msg, cmd, arg, teamOrg) {
+  const orgs = irOrgsFor(ex);
+  const mapped = msg.reply_to_message && S.irMap && S.irMap[`${msg.chat.id}:${msg.reply_to_message.message_id}`];
+  const org = (mapped && orgs.find(o => o.id === mapped)) || (teamOrg && orgs.includes(teamOrg) ? teamOrg : null) || (orgs.length === 1 ? orgs[0] : null);
+  if (cmd === 'ir') {
+    if (!orgs.length) return tgSend(msg.chat.id, '볼 수 있는 IR 자료가 없어요. 기업이 검토 전문가로 초대하거나 상담 중일 때 볼 수 있어요.');
+    for (const o of org ? [org] : orgs) {
+      const v = irLatest(o);
+      const j = await tg('sendMessage', { chat_id: msg.chat.id, text: `[${o.name} IR] v${v.n} "${v.outline.title}" ${v.outline.slides.length}장${o.ir.final ? ` · v${o.ir.final.n} 최종 확정됨` : ''}\n보기·코멘트: ${expertLink(ex, 'ir-' + o.id)}\n텔레그램에서 코멘트: 이 메시지에 답장으로 /irc 장번호 내용` });
+      if (j && j.ok) { (S.irMap = S.irMap || {})[`${msg.chat.id}:${j.result.message_id}`] = o.id; save(); }
+    }
+    return;
+  }
+  if (!org) return tgSend(msg.chat.id, orgs.length ? '어느 기업의 IR인지 모르겠어요. /ir 로 받은 메시지에 답장으로 /irc 장번호 내용 을 보내 주세요.' : '코멘트를 남길 수 있는 IR 자료가 없어요.');
+  const m = arg.match(/^(\d+)\s+([\s\S]+)$/);
+  if (!m) return tgSend(msg.chat.id, '형식: /irc 장번호 내용  (예: /irc 5 시장 규모 출처를 적어 주세요)');
+  const r = addIrComment(org, Number(m[1]) - 1, m[2], { kind: 'expert', name: ex.name, id: ex.id });
+  return tgSend(msg.chat.id, r.error || `${org.name} IR ${m[1]}장 "${r.comment.slideTitle}"에 코멘트를 남겼어요. 기업이 반영하면 알려 드릴게요.`);
+}
+async function runIrBot(bot, room, org, text, mode) {
+  const ir = ensureIr(org);
+  if (mode === 'vc') return runVcSearch(bot, org, text);
+  const prev = mode === 'update' ? irLatest(org) : null;
+  const open = prev ? ir.comments.filter(c => c.status === 'open') : [];
+  const user = `${prev ? `[직전 IR 개요 v${prev.n}]\n${JSON.stringify({ title: prev.outline.title, palette: prev.outline.palette, slides: prev.outline.slides })}\n\n` : ''}${open.length ? `[반영할 코멘트]\n${open.map(c => `- id ${c.id} (v${c.versionN} ${c.slide + 1}장 "${c.slideTitle}", ${c.by.name}${c.by.kind === 'expert' ? ' 전문가' : ''}): ${c.text}`).join('\n')}\n\n` : ''}[이번 요청]\n${text}`;
+  const r = await callClaude(`${bot.role}\n\n[우리 기업]\n${orgContext(org)}\n${IR_SPEC}`, user, 8000);
+  if (r.error) return { error: r.error };
+  if (r.cut) return { error: 'IR 개요가 길어 만들다 끊겼어요. 장 수를 줄여 다시 요청해 주세요.' };
+  const nrm = DECK.normalizeOutline(r.text);
+  if (nrm.error) return { error: `IR 자료를 만들지 못했어요 (${nrm.error}). 다시 요청해 주세요.` };
+  let resolved = [];
+  try { const raw = JSON.parse(r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); resolved = Array.isArray(raw.resolved) ? raw.resolved : []; } catch (e) {}
+  const v = { id: newId('i'), n: ((irLatest(org) || {}).n || 0) + 1, at: Date.now(), outline: nrm.outline, request: str(text, 200), note: '' };
+  const applied = [];
+  for (const x of resolved) { const c = open.find(o => o.id === (x && x.id)); if (c) { c.status = 'applied'; c.reply = str(x.reply, 200); c.appliedIn = v.n; applied.push(c); } }
+  v.note = applied.length ? `코멘트 ${applied.length}개 반영` : mode === 'create' ? '초안' : '수정';
+  ir.versions.push(v); if (ir.versions.length > 30) ir.versions.splice(0, ir.versions.length - 30);
+  save(); emit('ir', {}, org.id); emitIrx(org);
+  const marks = nrm.outline.slides.reduce((a, s) => a + (JSON.stringify(s).match(/\[확인 필요/g) || []).length, 0);
+  const left = ir.comments.filter(c => c.status === 'open').length;
+  const checks = nrm.outline.checks.length ? `\n\n**확인할 것**\n${nrm.outline.checks.map(c => '· ' + c).join('\n')}` : '';
+  const summary = `IR v${v.n} "${v.outline.title}" ${v.outline.slides.length}장을 ${mode === 'create' ? '만들었어요' : '고쳤어요'}.${applied.length ? ` 코멘트 ${applied.length}개를 반영했어요.` : ''}${left ? ` 반영하지 않은 코멘트 ${left}개는 그대로 남겨 뒀어요(사실 확인 필요 등).` : ''}${marks ? `\n[확인 필요] 표시 ${marks}곳이 있어요. 채워 넣어야 최종 확정할 때 경고가 사라져요.` : ''}`;
+  return {
+    text: `${summary}${checks}\n\n"IR 자료" 화면에서 웹 슬라이드로 보고, 검토 전문가를 초대해 장별 코멘트를 받을 수 있어요.`,
+    ir: { n: v.n, title: v.outline.title, count: v.outline.slides.length, applied: applied.length },
+    tgText: summary,
+    after: () => notifyIrExperts(org, `IR v${v.n}이 올라왔어요${applied.length ? ` (코멘트 ${applied.length}개 반영: ${applied.map(c => c.by.name).filter((x, i, a) => a.indexOf(x) === i).join(', ')})` : ''}.`)
+  };
+}
+
+// 웹 검색 도구를 쓰는 Claude 호출: 검색 결과 URL을 모아 두었다가, 답에 나온 출처가 실제 검색 결과인지 확인할 때 씀
+async function callClaudeSearch(system, user, maxTokens = 4000) {
+  if (!ANTHROPIC_API_KEY) return { error: '서버에 ANTHROPIC_API_KEY가 설정되지 않아 검색할 수 없어요.' };
+  const messages = [{ role: 'user', content: user }], urls = new Set();
+  let text = '';
+  try {
+    for (let i = 0; i < 4; i++) {
+      const r = await fetch(`${ANTHROPIC_BASE_URL}/v1/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, system, messages, tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6, user_location: { type: 'approximate', country: 'KR', timezone: 'Asia/Seoul' } }] })
+      });
+      const j = await r.json();
+      if (!r.ok) { console.error('Claude 검색 오류', r.status, j); return { error: r.status === 429 ? '요청이 많아 잠시 쉬어야 해요. 1분 뒤 다시 시도해 주세요.' : '검색 답변을 받지 못했어요. 다시 시도해 주세요.' }; }
+      for (const blk of j.content || []) {
+        if (blk.type === 'web_search_tool_result' && Array.isArray(blk.content)) blk.content.forEach(x => x.url && urls.add(x.url));
+        if (blk.type === 'text') { text += blk.text; (blk.citations || []).forEach(c => c.url && urls.add(c.url)); }
+      }
+      if (j.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: j.content }); continue; } // 긴 검색은 이어서 진행
+      break;
+    }
+  } catch (e) { console.error(e); return { error: '검색 중 네트워크 오류가 났어요.' }; }
+  return { text, urls };
+}
+const sameSource = (a, urls) => { if (!/^https?:\/\//.test(a || '')) return false; const n = u => u.replace(/[#?].*$/, '').replace(/\/$/, ''); return [...urls].some(u => n(u) === n(a) || n(a).startsWith(n(u)) || n(u).startsWith(n(a))); };
+async function runVcSearch(bot, org, text) {
+  const ir = ensureIr(org);
+  const system = `${bot.role}
+
+[VC 찾기]
+웹 검색으로 이 기업에 맞는 투자사(VC·임팩트 투자사·액셀러레이터)를 찾으세요. 한국 투자사를 우선하세요.
+- 검색 결과에서 실제로 확인한 곳만 쓰세요. 이름·투자 분야·단계는 출처 페이지에 나온 내용만. 연락처·담당자·투자 조건을 지어내지 마세요.
+- 각 투자사마다 근거가 된 검색 결과 페이지 URL을 source에 그대로 넣으세요.
+- 마지막에 JSON 하나만 출력하세요: {"vcs":[{"name":"","focus":"투자 분야 (출처 기준)","stage":"투자 단계 (출처에 없으면 빈칸)","why":"이 기업과 맞는 이유 한 줄","source":"URL"}], "note":"찾는 방법·주의할 점 한두 줄"}
+- 5~8곳.`;
+  const r = await callClaudeSearch(system, `[우리 기업]\n${orgContext(org)}\n\n[요청]\n${text}`);
+  if (r.error) return { error: r.error };
+  let raw;
+  try { raw = JSON.parse(r.text.slice(r.text.lastIndexOf('{"vcs"') >= 0 ? r.text.lastIndexOf('{"vcs"') : r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (e) { return { error: 'VC 목록을 읽지 못했어요. 다시 요청해 주세요.' }; }
+  const all = (Array.isArray(raw.vcs) ? raw.vcs : []).slice(0, 10).map(x => ({ name: str(x.name, 60), focus: str(x.focus, 120), stage: str(x.stage, 60), why: str(x.why, 160), source: str(x.source, 400) })).filter(x => x.name);
+  const items = all.filter(x => sameSource(x.source, r.urls)); // 출처가 실제 검색 결과에 없으면 뺌
+  const dropped = all.length - items.length;
+  if (!items.length) return { error: `출처를 확인할 수 있는 투자사를 찾지 못했어요${dropped ? ` (출처가 확인되지 않은 ${dropped}곳은 뺐어요)` : ''}. 조건을 바꿔 다시 요청해 주세요.` };
+  ir.vcs.unshift({ at: Date.now(), request: str(text, 200), items, dropped, note: str(raw.note, 300), searched: r.urls.size });
+  ir.vcs = ir.vcs.slice(0, 5); save(); emit('ir', {}, org.id);
+  const list = items.map((x, i) => `${i + 1}. **${x.name}** — ${x.focus}${x.stage ? ` · ${x.stage}` : ''}\n   ${x.why}\n   출처: ${x.source}`).join('\n');
+  return {
+    text: `웹 검색으로 찾은 투자사 ${items.length}곳이에요.${dropped ? ` (출처가 검색 결과로 확인되지 않은 ${dropped}곳은 뺐어요)` : ''}\n\n${list}\n\n투자 분야·단계는 출처 페이지 기준이고 바뀌었을 수 있어요. 연락 전에 각 투자사 홈페이지에서 직접 확인해 주세요.${raw.note ? `\n${str(raw.note, 300)}` : ''}`,
+    ir: { vc: true, count: items.length },
+    tgText: `투자사 ${items.length}곳을 찾았어요. 목록과 출처는 웹앱 IR 화면에서 볼 수 있어요.`
   };
 }
 
@@ -635,6 +804,7 @@ async function handleExpertDM(ex, msg, cmd) {
   }
   if (cmd === 'rooms') return tgSend(msg.chat.id, active.length ? '진행 중인 상담\n' + active.map((r, i) => `${i + 1}. ${roomLabel(r)}`).join('\n') + '\n\n/info 번호 로 그 기업의 정보 문서를 받을 수 있어요.' : '진행 중인 상담이 없어요.');
   if (cmd === 'info') return sendDocToExpert(ex, msg, msg.text.split(/\s+/)[1] || '');
+  if (cmd === 'ir' || cmd === 'irc') return handleIrCmd(ex, msg, cmd, msg.text.replace(/^\/\w+(@\w+)?\s*/, ''), null);
   if (cmd === 'ask') return answerAboutOrg(ex, msg, msg.text.replace(/^\/ask(@\w+)?\s*/i, ''));
   if (!room) return tgSend(msg.chat.id, active.length ? `진행 중인 상담이 ${active.length}개예요. 답할 기업의 메시지를 길게 눌러 "답장"으로 보내 주세요.` : '진행 중인 상담이 없어요. 기업이 호출하면 여기로 메시지가 와요.');
   if (!active.includes(room)) {
@@ -653,6 +823,7 @@ const TEAM_HELP = `전문가 팀방 사용법
 /use 번호 — 그 상담을 이 팀방에 연결 (기업 방의 새 메시지가 여기 보임)
 /send 내용 — 연결된 상담의 기업에게 보내기 (/s 로 줄여 써도 돼요)
    다른 메시지에 "답장"으로 /send 를 보내면 그 메시지 내용을 보내요
+/ir · /irc 장번호 내용 — 연결된 기업의 IR 자료 보기·코멘트
 /info — 연결된 기업의 정보 문서(HTML) 받기 · 고친 파일을 여기 올리면 기업이 확인 후 반영
 /ask 질문 — 기업 정보 문서를 바탕으로 함께봇에게 묻기
 /join 하고 싶은 말 — 호출되지 않은 상담에 참여 요청 (기업이 승인하면 참여)
@@ -698,6 +869,7 @@ async function handleTeam(msg, ex, cmd, arg) {
   }
   if (cmd === 'detach') { if (!room) return tgSend(chat.id, '연결된 상담이 없어요.'); return detachTeam(room); }
   if (cmd === 'info') return sendDocToExpert(ex, msg, arg, room);
+  if (cmd === 'ir' || cmd === 'irc') return handleIrCmd(ex, msg, cmd, arg, room ? orgById(room.orgId) : null);
   if (cmd === 'ask') return answerAboutOrg(ex, msg, arg, room);
   if (cmd === 'join') {
     // /join [번호] [하고 싶은 말] — 번호가 없으면 이 팀방에 연결된 상담
@@ -744,7 +916,7 @@ async function handleTeam(msg, ex, cmd, arg) {
   return tgSend(chat.id, `팀방에서 쓸 수 없는 명령이에요.\n\n${TEAM_HELP}`);
 }
 
-const EXPERT_CMDS = '/info 기업 정보 문서 받기 · /ask 질문 기업 정보 묻기 · 고친 HTML 파일을 올리면 기업이 승인 후 반영\n/login 프로필 편집 · /rate 숫자 시간당 토큰 · /on /off 상담 받기 켜기·끄기\n/rooms 진행 중인 상담 · /end 상담 종료 · /balance 받은 토큰';
+const EXPERT_CMDS = '/ir IR 자료 보기 · /irc 장번호 내용 IR 코멘트\n/info 기업 정보 문서 받기 · /ask 질문 기업 정보 묻기 · 고친 HTML 파일을 올리면 기업이 승인 후 반영\n/login 프로필 편집 · /rate 숫자 시간당 토큰 · /on /off 상담 받기 켜기·끄기\n/rooms 진행 중인 상담 · /end 상담 종료 · /balance 받은 토큰';
 const HELP = () => `함께봇 사용법
 /link 연결코드 — 이 대화(그룹 또는 1:1)를 웹앱 채팅방과 연결
 /unlink — 연결 해제
@@ -787,7 +959,7 @@ async function handleTelegram(msg) {
   // 기업 방과 연결되지 않은 그룹에서 전문가가 쓰면 '전문가 팀방'으로 동작
   if (!isPrivate && !roomByChat(chat.id)) {
     const sender = expertByChat(msg.from.id); // 텔레그램 1:1 chat id = 사용자 id
-    const teamCmds = ['team', 'rooms', 'use', 'send', 's', 'end', 'detach', 'join', 'info', 'ask'];
+    const teamCmds = ['team', 'rooms', 'use', 'send', 's', 'end', 'detach', 'join', 'info', 'ask', 'ir', 'irc'];
     if (S.expertGroups[chat.id] && cmd !== 'link') return handleTeam(msg, sender, cmd, arg);
     if (sender && teamCmds.includes(cmd)) return handleTeam(msg, sender, cmd, arg);
   }
@@ -847,7 +1019,7 @@ async function pollTelegram() {
     { command: 'help', description: '사용법' }, { command: 'bots', description: '전문가 봇 목록' },
     { command: 'link', description: '웹앱 채팅방과 연결' }, { command: 'unlink', description: '연결 해제' },
     ...BOTS.filter(b => !b.soon).map(b => ({ command: b.id, description: b.name })),
-    { command: 'team', description: '(전문가) 이 그룹을 전문가 팀방으로' }, { command: 'send', description: '(전문가 팀방) 기업에게 보내기' }, { command: 'use', description: '(전문가 팀방) 상담 연결' }, { command: 'join', description: '(전문가 팀방) 상담 참여 요청' }, { command: 'info', description: '(전문가) 기업 정보 문서 받기' }, { command: 'ask', description: '(전문가) 기업 정보 묻기' },
+    { command: 'team', description: '(전문가) 이 그룹을 전문가 팀방으로' }, { command: 'send', description: '(전문가 팀방) 기업에게 보내기' }, { command: 'use', description: '(전문가 팀방) 상담 연결' }, { command: 'join', description: '(전문가 팀방) 상담 참여 요청' }, { command: 'info', description: '(전문가) 기업 정보 문서 받기' }, { command: 'ir', description: '(전문가) IR 자료 보기' }, { command: 'irc', description: '(전문가) IR 코멘트: 장번호 내용' }, { command: 'ask', description: '(전문가) 기업 정보 묻기' },
     { command: 'login', description: '(전문가) 프로필 페이지 로그인 코드' }, { command: 'rate', description: '(전문가) 시간당 토큰 정하기' }
   ] });
   console.log(`텔레그램: @${tgUsername} 으로 중계 시작`);
@@ -1031,6 +1203,19 @@ async function expertApi(req, res, p, sess) {
     received: S.ledger.filter(l => l.expertId === ex.id).slice(-100).reverse().map(l => ({ at: l.at, type: l.type, amount: l.amount, orgName: l.type === 'pay' ? l.orgName : '', minutes: l.minutes, memo: l.memo })),
     rateMax: RATE_MAX
   });
+  if (p === '/api/expert/ir') return json(res, 200, { orgs: irOrgsFor(ex).map(o => { const v = irLatest(o); return { orgId: o.id, orgName: o.name, n: v.n, at: v.at, title: v.outline.title, final: o.ir.final && o.ir.final.n, open: o.ir.comments.filter(c => c.status === 'open').length }; }) });
+  if (p === '/api/expert/ir/view') {
+    const org = orgById(new URL(req.url, 'http://x').searchParams.get('org'));
+    if (!org || !irAccess(ex, org) || !irLatest(org)) return BAD(res, '볼 수 있는 IR 자료가 아니에요', 404);
+    const v = irLatest(org);
+    return json(res, 200, { orgId: org.id, orgName: org.name, n: v.n, at: v.at, note: v.note, outline: v.outline, comments: org.ir.comments, final: org.ir.final && org.ir.final.n });
+  }
+  if (p === '/api/expert/ir/comment' && req.method === 'POST') {
+    const b = await body(req), org = orgById(b.orgId);
+    if (!org || !irAccess(ex, org)) return BAD(res, '코멘트를 남길 수 있는 IR 자료가 아니에요', 404);
+    const r = addIrComment(org, b.slide, b.text, { kind: 'expert', name: ex.name, id: ex.id });
+    return r.error ? BAD(res, r.error) : json(res, 200, { ok: true });
+  }
   if (p === '/api/expert/profile' && req.method === 'POST') {
     const b = await body(req);
     const name = str(b.name, 30), field = str(b.field, 40), rate = Number(b.rate);
@@ -1066,6 +1251,66 @@ async function userApi(req, res, p, sess) {
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)]))
     });
+  // ----- IR 자료 -----
+  if (p.startsWith('/api/ir')) {
+    const ir = ensureIr(org), url = new URL(req.url, 'http://x');
+    const meta = v => ({ id: v.id, n: v.n, at: v.at, note: v.note, request: v.request, title: v.outline.title, count: v.outline.slides.length });
+    if (req.method === 'GET') {
+      if (p === '/api/ir') {
+        const cur = irLatest(org);
+        return json(res, 200, {
+          current: cur ? { ...meta(cur), outline: cur.outline } : null, versions: ir.versions.slice().reverse().map(meta),
+          comments: ir.comments, final: ir.final, vcs: ir.vcs, hasBot: S.rooms.some(r => r.orgId === org.id && r.bots.includes('ir')),
+          reviewers: ir.reviewers.map(id => expertById(id)).filter(Boolean).map(e => ({ id: e.id, name: e.name, field: e.field })),
+          experts: publicExperts().map(e => ({ id: e.id, name: e.name, field: e.field, inConsult: S.rooms.some(r => r.orgId === org.id && (r.humans || []).includes(e.id)) }))
+        });
+      }
+      if (p === '/api/ir/version') { const v = ir.versions.find(x => x.id === url.searchParams.get('id')); return v ? json(res, 200, { ...meta(v), outline: v.outline }) : BAD(res, '없는 버전이에요', 404); }
+      if (p === '/api/ir/pptx') {
+        if (!ir.final) return BAD(res, '먼저 최종 확정해 주세요', 400);
+        const v = ir.versions.find(x => x.id === ir.final.id); if (!v) return BAD(res, '확정한 버전을 찾을 수 없어요', 404);
+        const buf = await DECK.buildDeck(v.outline, org.name);
+        const fname = `${String(org.name || '기업').replace(/[\\/:*?"<>|\s]+/g, '_')}_IR_v${v.n}_최종.pptx`;
+        res.writeHead(200, { 'content-type': PPTX_MIME, 'content-length': buf.length, 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fname)}` });
+        return res.end(buf);
+      }
+      return BAD(res, '없는 기능이에요', 404);
+    }
+    if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
+    const b = await body(req);
+    if (p === '/api/ir/comment') { const r = addIrComment(org, b.slide, b.text, { kind: 'org', name: user.name, id: user.id }); return r.error ? BAD(res, r.error) : json(res, 200, { ok: true, id: r.comment.id }); }
+    if (p === '/api/ir/dismiss') { const c = ir.comments.find(x => x.id === b.id && x.status === 'open'); if (!c) return BAD(res, '없는 코멘트예요', 404); c.status = 'dismissed'; c.reply = str(b.reason, 200) || '기업이 반영하지 않기로 함'; save(); emit('ir', {}, org.id); emitIrx(org); return json(res, 200, { ok: true }); }
+    if (p === '/api/ir/apply') {
+      const room = S.rooms.find(r => r.orgId === org.id && r.bots.includes('ir'));
+      if (!room) return BAD(res, '먼저 채팅방에 IR 봇을 초대해 주세요');
+      const n = ir.comments.filter(c => c.status === 'open').length;
+      if (!n) return BAD(res, '반영할 코멘트가 없어요');
+      addMsg(room, { from: 'me', text: `전문가 코멘트 ${n}개를 반영해 주세요` });
+      await runBot(room, 'ir', `전문가 코멘트 ${n}개를 반영해 주세요`);
+      return json(res, 200, { ok: true });
+    }
+    if (p === '/api/ir/final') {
+      const v = ir.versions.find(x => x.id === b.versionId); if (!v) return BAD(res, '없는 버전이에요', 404);
+      const marks = JSON.stringify(v.outline.slides).match(/\[확인 필요/g) || [];
+      const open = ir.comments.filter(c => c.status === 'open').length;
+      if ((marks.length || open) && !b.force) return json(res, 409, { error: `아직 [확인 필요] ${marks.length}곳, 반영하지 않은 코멘트 ${open}개가 있어요. 그래도 확정할까요?`, marks: marks.length, open });
+      ir.final = { id: v.id, n: v.n, at: Date.now(), by: user.name }; save(); emit('ir', {}, org.id);
+      const room = irRoom(org); if (room) addMsg(room, { from: 'sys', text: `IR v${v.n}을 최종 확정했어요. "IR 자료" 화면에서 PPTX로 내려받을 수 있어요.` });
+      notifyIrExperts(org, `IR v${v.n}이 최종 확정됐어요. 검토해 주셔서 감사합니다.`);
+      return json(res, 200, { ok: true });
+    }
+    if (p === '/api/ir/unfinal') { ir.final = null; save(); emit('ir', {}, org.id); return json(res, 200, { ok: true }); }
+    if (p === '/api/ir/reviewer') {
+      const ex = expertById(b.expertId); if (!ex || !ex.tgChatId) return BAD(res, '없는 전문가예요', 404);
+      if (b.add) { if (!ir.reviewers.includes(ex.id)) ir.reviewers.push(ex.id); }
+      else ir.reviewers = ir.reviewers.filter(id => id !== ex.id);
+      save(); emit('ir', {}, org.id); emitIrx(org);
+      if (b.add && irLatest(org)) notifyIrExperts(org, `${org.name}이(가) IR 자료 검토를 부탁했어요 (현재 v${irLatest(org).n}). 장별로 코멘트를 남겨 주세요.`, [ex.id]);
+      return json(res, 200, { ok: true });
+    }
+    return BAD(res, '없는 기능이에요', 404);
+  }
+
   // ----- 마케팅 봇 PPT 내려받기 -----
   if (p === '/api/deck/download' && req.method === 'GET') {
     const d = deckById(org, new URL(req.url, 'http://x').searchParams.get('id'));
@@ -1305,7 +1550,14 @@ http.createServer(async (req, res) => {
   try {
     if (p === '/api/events') {
       const user = sess && sess.kind === 'user' && userById(sess.userId);
-      if (!user && !(sess && sess.kind === 'admin')) return BAD(res, '로그인이 필요해요', 401);
+      const exs = sess && sess.kind === 'expert' && expertById(sess.expertId);
+      if (!user && !exs && !(sess && sess.kind === 'admin')) return BAD(res, '로그인이 필요해요', 401);
+      if (exs) { // 전문가: IR 변경 알림만 받음 ('*'로 보내는 이벤트)
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+        res.write('retry: 3000\n\n'); clients.set(res, { orgId: 'expert:' + exs.id, admin: false });
+        const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+        return req.on('close', () => { clearInterval(ping); clients.delete(res); });
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
       res.write('retry: 3000\n\n');
       clients.set(res, { orgId: user ? user.orgId : null, admin: !user });

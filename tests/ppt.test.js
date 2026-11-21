@@ -81,6 +81,6 @@ const A = mk(), U = mk(), U2 = mk(), sl = ms => new Promise(r => setTimeout(r, m
   const td = sentDocs.find(d => d.to === '-700');
   chk('텔레그램 그룹에서 /mkt PPT 요청 → .pptx 파일 전송', td && td.name.endsWith('.pptx') && td.type.includes('presentationml') && td.size > 10000);
   const led = (await A('/api/admin/state')).j.ledger.filter(l => l.type === 'bot');
-  chk('거래 기록: "마케팅 매니저 봇 PPT" 3토큰 2건, 일반 1건', led.filter(l => l.botName === '마케팅 매니저 봇 PPT' && l.amount === 3).length === 2 && led.filter(l => l.botName === '마케팅 매니저 봇').length === 1);
+  chk('거래 기록: "마케팅 봇 PPT 만들기" 3토큰 2건, 일반 1건', led.filter(l => l.botName === '마케팅 봇 PPT 만들기' && l.amount === 3).length === 2 && led.filter(l => l.botName === '마케팅 매니저 봇').length === 1);
   process.exit(FAILS ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

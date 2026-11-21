@@ -112,6 +112,10 @@ button{cursor:pointer}
 .sitecard .acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.sitecard a.btn{display:inline-flex;align-items:center;text-decoration:none}
 .slug{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:14px}.slug input{max-width:200px;min-height:40px}
 .live{font-size:13px;color:#06784f;font-weight:700}
+.irsheet{width:min(1240px,100%)}
+.irfinal{border-radius:12px;padding:10px 14px;background:light-dark(#e3f6ee,#12352a);font-size:14px}
+.vclist{list-style:none;margin:0;padding:0}.vclist li{border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--card)}
+.vclist a{overflow-wrap:anywhere;font-size:13px}.revlist li{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .typing{color:var(--mute);font-size:14px;padding:0 4px}
 .tools{display:flex;gap:6px;margin-top:6px}
 .tools button{border:0;background:none;color:var(--mute);font-size:13px;min-height:32px;padding:0 6px}
@@ -170,6 +174,7 @@ textarea.field{min-height:80px;resize:vertical}
   </div>
   <button class="org" id="orgBtn"><b id="orgName">기업 정보 입력하기</b><span id="orgMission">봇이 우리 기업을 알고 답하도록</span></button>
   <button class="docbtn" id="docBtn" type="button"><span>기업 정보 문서</span><span class="badge" id="docBadge" hidden></span></button>
+  <button class="docbtn" id="irBtn" type="button"><span>IR 자료</span><span class="badge" id="irBadge" hidden></span></button>
   <a class="docbtn sitelink" id="siteLink" target="_blank" rel="noopener" hidden><span>우리 홈페이지</span><span class="note" style="padding:0" id="siteLinkN"></span></a>
   <div class="wallet" id="wallet"><span>상담 토큰</span><b id="walletN">0</b></div>
   <nav class="rooms" id="rooms" aria-label="채팅방"></nav>
@@ -224,6 +229,18 @@ textarea.field{min-height:80px;resize:vertical}
  </div>
 </div>
 
+<div class="veil docveil" id="irVeil" role="dialog" aria-modal="true" aria-labelledby="irTitle">
+ <div class="sheet docsheet irsheet">
+  <div class="dochead">
+   <div><h3 id="irTitle">IR 자료</h3><div class="note" style="padding:0" id="irMeta"></div></div>
+   <button class="btn ghost" type="button" data-close>닫기</button>
+  </div>
+  <div class="doctabs" id="irTabs"></div>
+  <div id="irActs"></div>
+  <div id="irMain"></div>
+ </div>
+</div>
+
 <div class="veil" id="orgVeil" role="dialog" aria-modal="true" aria-labelledby="orgTitle">
  <form class="sheet" id="orgForm">
   <h3 id="orgTitle">우리 기업 정보</h3>
@@ -244,6 +261,7 @@ textarea.field{min-height:80px;resize:vertical}
  </form>
 </div>
 
+<script src="/irview.js"></script>
 <script>
 {
 let S={org:{},rooms:[],bots:[],telegram:{enabled:false},ai:false}, current=null, typing={};
@@ -302,7 +320,7 @@ function msgHTML(m,i){
  if(m.from==='tg')return `<div class="msg">${tgAv(m.name)}<div><div class="who">${esc(m.name)}<span class="src">텔레그램</span></div><div class="bubble">${esc(m.text)}</div></div></div>`;
  if(m.from==='hx'){const x=expById(m.expertId)||{name:m.name,color:'#06a77d'};return `<div class="msg">${xAv(x)}<div><div class="who">${esc(m.name)}<span class="human">사람 전문가</span></div><div class="bubble">${esc(m.text)}</div></div></div>`}
  const b=botById(m.from)||{name:'봇',short:'봇',color:'#888'};
- return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.site?siteCard(m):''}${m.deck?`<div class="sitecard deckcard"><div class="acts"><a class="btn" href="/api/deck/download?id=${m.deck.id}">PPT 내려받기 (.pptx)</a><span class="note" style="padding:0">${m.deck.count}장 · 발표자 메모 포함 · PowerPoint·Keynote·Google 슬라이드에서 열려요</span></div></div>`:''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
+ return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.site?siteCard(m):''}${m.ir?`<div class="sitecard"><div class="acts"><button class="btn" type="button" data-openir>IR 자료 열기</button><span class="note" style="padding:0">${m.ir.vc?`투자사 ${m.ir.count}곳 · 출처 포함`:`v${m.ir.n} · ${m.ir.count}장${m.ir.applied?` · 코멘트 ${m.ir.applied}개 반영`:''}`}</span></div></div>`:''}${m.deck?`<div class="sitecard deckcard"><div class="acts"><a class="btn" href="/api/deck/download?id=${m.deck.id}">PPT 내려받기 (.pptx)</a><span class="note" style="padding:0">${m.deck.count}장 · 발표자 메모 포함 · PowerPoint·Keynote·Google 슬라이드에서 열려요</span></div></div>`:''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
 }
 function renderLog(){
  const r=room(); if(!r)return;
@@ -420,6 +438,7 @@ es=new EventSource('/api/events');
 es.onerror=()=>{if(es&&es.readyState===2){es=null;load().catch(()=>{})}};
 es.addEventListener('room',e=>{const d=JSON.parse(e.data);if(d.roomId)delete typing[d.roomId];clearTimeout(t);t=setTimeout(async()=>{const wasTg=room()&&room().tgChatId;await load();if($('tgVeil').classList.contains('open')&&!wasTg&&room().tgChatId)renderTg()},120)});
 es.addEventListener('typing',e=>{const d=JSON.parse(e.data);typing[d.roomId]=d.botId;if(room()&&room().id===d.roomId)renderLog()});
+es.addEventListener('ir',async()=>{await loadIr();if($('irVeil').classList.contains('open')&&!document.activeElement.matches('#irMain textarea'))renderIr()});
 es.addEventListener('doc',async()=>{await loadDoc();if($('docVeil').classList.contains('open')&&docMode!=='edit')renderDoc()});
 }
 
@@ -434,6 +453,42 @@ $('log').addEventListener('click',async e=>{
  if(t.hasAttribute('data-pub')){t.disabled=true;t.textContent='게시하고 확인하는 중…';const j=await api('/api/site/publish',{versionId:c.dataset.sitev,slug:c.querySelector('[data-slug]').value.trim(),roomId:room().id});if(j.error||!j.ok){err.textContent=j.error||'게시 후 확인에 실패했어요.';t.disabled=false;t.textContent='이 버전 게시하기'}return}
  if(t.hasAttribute('data-unpub')){if(t.textContent!=='정말 내릴까요?'){t.textContent='정말 내릴까요?';return}const j=await api('/api/site/unpublish',{});if(j.error)err.textContent=j.error;else load();return}
 },true);
+
+/* ===== IR 자료 ===== */
+let IR=null, irTab='slides', irView=null, irForce=false;
+async function loadIr(){try{IR=await api('/api/ir');const n=IR.comments.filter(c=>c.status==='open').length;$('irBadge').hidden=!n;$('irBadge').textContent=n?`코멘트 ${n}`:''}catch(e){}}
+function renderIr(){
+ if(!IR)return;const c=IR.current;
+ $('irMeta').textContent=c?`최신 v${c.n} · ${c.title} · ${c.count}장 · ${whenD(c.at)} · ${c.note||''}`:'아직 IR 자료가 없어요';
+ const tab=(k,l)=>`<button type="button" data-irtab="${k}" aria-pressed="${irTab===k}">${l}</button>`;
+ const open=IR.comments.filter(x=>x.status==='open').length;
+ $('irTabs').innerHTML=tab('slides','슬라이드')+tab('vc',`VC 후보${IR.vcs.length?' '+IR.vcs[0].items.length:''}`)+tab('rev',`검토 전문가 ${IR.reviewers.length}`)+tab('hist','버전 기록');
+ $('irActs').innerHTML=!c?'':`${IR.final?`<div class="irfinal"><b>v${IR.final.n} 최종 확정</b> (${whenD(IR.final.at)}) <a class="btn" style="display:inline-flex;align-items:center;text-decoration:none;margin-left:8px" href="/api/ir/pptx">PPTX 내려받기</a> <button class="btn ghost" type="button" id="irUnfinal">확정 취소</button>${IR.final.n!==c.n?` <span class="payerr">최신은 v${c.n}이에요</span>`:''}</div>`:''}
+  <div class="acts" style="margin-top:8px">${open?`<button class="btn" type="button" id="irApply">코멘트 ${open}개 반영 (IR 봇)</button>`:''}${!IR.final||IR.final.n!==c.n?`<button class="btn ${open?'ghost':''}" type="button" id="irFinal">v${c.n} 최종 확정</button>`:''}</div><div class="docerr" id="irErr"></div>`;
+ const m=$('irMain');
+ if(!c){m.innerHTML=`<div class="empty" style="margin:30px auto"><h3>IR 자료를 시작해 보세요</h3><p>${IR.hasBot?'채팅방에서 IR 봇에게 "IR 자료 초안 만들기"를 요청하세요.':'채팅방의 "전문가 초대"에서 IR 봇을 초대한 뒤 "IR 자료 초안 만들기"를 요청하세요.'}</p></div>`;return}
+ if(irTab==='slides'){const v=irView||c, latest=v.id===c.id;
+  m.innerHTML=`${latest?'':`<div class="payerr" style="margin-bottom:8px">지난 버전 v${v.n}을 보고 있어요. 코멘트는 최신 버전에만 남길 수 있어요. <button class="btn ghost" type="button" id="irLatest">최신 보기</button></div>`}${IRView.render(v.outline,{org:S.org.name,comments:latest?IR.comments:[],commenting:latest,dismiss:true})}`;}
+ else if(irTab==='vc'){m.innerHTML=IR.vcs.length?IR.vcs.map((s,k)=>`<h4 style="margin:${k?18:4}px 0 8px">${whenD(s.at)} · "${esc(s.request)}" · ${s.items.length}곳${s.dropped?` (출처 미확인 ${s.dropped}곳 제외)`:''}</h4><ul class="vclist">${s.items.map(x=>`<li><b>${esc(x.name)}</b> — ${esc(x.focus)}${x.stage?` · ${esc(x.stage)}`:''}<div class="note" style="padding:4px 0">${esc(x.why)}</div><a href="${esc(x.source)}" target="_blank" rel="noopener noreferrer">${esc(x.source)}</a></li>`).join('')}</ul>${s.note?`<p class="note" style="padding:0">${esc(s.note)}</p>`:''}`).join('')+'<p class="note" style="padding:0">웹 검색 결과에서 출처를 확인한 곳만 보여요. 투자 분야·단계는 바뀌었을 수 있으니 연락 전에 각 투자사 홈페이지에서 확인하세요.</p>':`<p class="note">아직 찾은 투자사가 없어요. 채팅방에서 IR 봇에게 "우리에게 맞는 VC 찾기"를 요청하세요.</p>`}
+ else if(irTab==='rev'){m.innerHTML=`<p class="note" style="padding:0">검토 전문가는 상담 중이 아니어도 IR 슬라이드를 보고 장별로 코멘트할 수 있어요. 새 버전이 나오면 텔레그램으로 알림과 바로 볼 수 있는 링크가 가요. 지금 상담 중인 전문가도 볼 수 있어요.</p><ul class="hist revlist">${IR.experts.map(e=>{const on=IR.reviewers.some(r=>r.id===e.id);return `<li><div><b>${esc(e.name)}</b> · ${esc(e.field)}${e.inConsult?' · 상담 중':''}</div><button class="btn ${on?'ghost':''}" type="button" data-rev="${e.id}" data-add="${on?0:1}">${on?'검토에서 빼기':'검토 부탁하기'}</button></li>`}).join('')||'<li>등록된 사람 전문가가 없어요.</li>'}</ul>`}
+ else if(irTab==='hist'){m.innerHTML=`<ul class="hist">${IR.versions.map(v=>`<li><div><b>v${v.n}</b>${IR.final&&IR.final.id===v.id?' <span class="st">최종</span>':''} · ${esc(v.title)} · ${v.count}장 · ${whenD(v.at)}<div class="note" style="padding:0">${esc(v.note||'')}${v.request?' · 요청: '+esc(v.request):''}</div></div><button class="btn ghost" type="button" data-irsee="${v.id}">보기</button></li>`).join('')}</ul>`}
+}
+async function openIr(){await loadIr();irView=null;irTab='slides';renderIr();open('irVeil');const h=location.hash.match(/^#irs-(\d+)$/);if(h&&$(h[0].slice(1)))$(h[0].slice(1)).scrollIntoView()}
+$('irBtn').onclick=openIr;
+$('log').addEventListener('click',e=>{if(e.target.closest('[data-openir]'))openIr()});
+$('irVeil').addEventListener('click',async e=>{
+ const t=e.target.closest('button');if(!t)return;const d=t.dataset,err=t=>{const x=$('irErr');if(x)x.textContent=t};
+ if(d.irtab){irTab=d.irtab;irView=null;return renderIr()}
+ if(d.ircSend){const ta=$('irMain').querySelector(`[data-irc-text="${d.ircSend}"]`);const j=await api('/api/ir/comment',{slide:+d.ircSend,text:ta.value});if(j.error){ta.placeholder=j.error;return}await loadIr();renderIr();return}
+ if(d.ircDismiss){const j=await api('/api/ir/dismiss',{id:d.ircDismiss});if(!j.error){await loadIr();renderIr()}return}
+ if(t.id==='irApply'){t.disabled=true;t.textContent='IR 봇이 반영하는 중… (최대 1분)';const j=await api('/api/ir/apply',{});await loadIr();renderIr();if(j.error)err(j.error);return}
+ if(t.id==='irFinal'){const r=await fetch('/api/ir/final',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({versionId:IR.current.id,force:irForce})});const j=await r.json();
+  if(r.status===409){irForce=true;err(j.error);t.textContent='그래도 확정';return}irForce=false;if(j.error)return err(j.error);await loadIr();renderIr();return}
+ if(t.id==='irUnfinal'){await api('/api/ir/unfinal',{});await loadIr();renderIr();return}
+ if(t.id==='irLatest'){irView=null;return renderIr()}
+ if(d.rev){await api('/api/ir/reviewer',{expertId:d.rev,add:d.add==='1'});await loadIr();return renderIr()}
+ if(d.irsee){irView=await api('/api/ir/version?id='+d.irsee);irTab='slides';return renderIr()}
+});
 
 /* ===== 기업 정보 문서 ===== */
 let DOCS=null, docMode='view', docSel=null, docDirty=false;
@@ -492,7 +547,7 @@ $('docVeil').addEventListener('click',async e=>{
  if(d.revert){if(t.textContent!=='정말 되돌릴까요?'){t.textContent='정말 되돌릴까요?';return}const j=await api('/api/doc/revert',{id:d.revert});if(j.error)return docErr(j.error);await loadDoc();docMode='history';renderDoc();docErr(`v${j.n}으로 저장했어요 (되돌린 내용). 이전 버전들은 그대로 남아 있어요.`,true);return}
 });
 
-load().then(loadDoc).catch(()=>{});
+load().then(loadDoc).then(loadIr).catch(()=>{});
 }
 </script>
 </body>
