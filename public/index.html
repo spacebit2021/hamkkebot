@@ -401,7 +401,7 @@ $('log').addEventListener('click',async e=>{
  if(card){const t=e.target.closest('button');if(!t)return;const r=room(),inp=card.querySelector('[data-amtin]'),err=card.querySelector('[data-err]');
   if(t.dataset.amt){card.querySelectorAll('[data-amt]').forEach(b=>b.setAttribute('aria-pressed',b===t));inp.value=t.dataset.amt;return}
   if(t.hasAttribute('data-payskip')){if(t.textContent!=='정말 보내지 않을까요?'){t.textContent='정말 보내지 않을까요?';return}await api(`/api/rooms/${r.id}/pay`,{msgId:card.dataset.pay,skip:true});return}
-  if(t.hasAttribute('data-paysend')){const amt=+inp.value;if(!Number.isInteger(amt)||amt<1){err.textContent='1 이상의 정수를 입력해 주세요';return}if(amt>S.wallet){err.textContent=`잔액이 부족해요 (현재 ${S.wallet}개). 관리자에게 충전을 요청해 주세요.`;return}
+  if(t.hasAttribute('data-paysend')){const amt=+inp.value;if(!Number.isInteger(amt)||amt<1){err.textContent='1 이상의 정수를 입력해 주세요';return}
    t.disabled=true;t.textContent='보내는 중…';const j=await api(`/api/rooms/${r.id}/pay`,{msgId:card.dataset.pay,amount:amt,memo:card.querySelector('[data-memo]').value});if(j.error){err.textContent=j.error;t.disabled=false;t.textContent='보내기'}}
   return}const rv=e.target.closest('[data-review]');if(rv){const r=room(),hs=(r.humans||[]).filter(id=>(expById(id)||{}).linked);if(hs.length===1){rv.textContent='보내는 중…';await api(`/api/rooms/${r.id}/review`,{expertId:hs[0],msgId:rv.dataset.review})}else{reviewMsg=rv.dataset.review;renderBots();open('inviteVeil')}return}
  const c=e.target.closest('[data-copy]');if(!c)return;try{await navigator.clipboard.writeText(room().msgs[+c.dataset.copy].text);c.textContent='복사됨'}catch(err){c.textContent='복사 안 됨'}});

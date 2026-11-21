@@ -58,9 +58,24 @@ const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).flatMap(b => [{ id: b.id,
 const PPT_RE = /ppt|피피티|파워\s*포인트|발표\s*자료|슬라이드|프레젠테이션|소개\s*자료|덱/i;
 const costOf = id => { const v = S.botCosts[id]; if (Number.isInteger(v)) return v; const it = COST_ITEMS().find(x => x.id === id); return it ? it.def : 0; };
 // 토큰 미리 잡기 → 성공하면 기록, 실패하면 돌려줌 (동시에 여러 요청이 와도 잔액을 넘지 않게)
-function reserveTokens(org, n) { if (n <= 0) return true; if (org.wallet < n) return false; org.wallet -= n; save(); return true; }
+// ---------- 기간제 무제한 토큰 (관리자 전용, 기업에는 보이지 않음) ----------
+// org.unlimited = { until, refillTo, grantedAt, memo, refills, total }
+// 기간 안에는 잔액이 모자라거나 0이 되면 refillTo만큼 다시 채운다. 기업 화면에는 평소처럼 잔액만 보이고,
+// 채운 기록은 관리자 거래 기록에만 '무제한 자동 충전'으로 남는다.
+const unlimitedActive = org => !!(org && org.unlimited && org.unlimited.until > Date.now());
+function ensureFunds(org, need = 1) {
+  if (!unlimitedActive(org) || (org.wallet >= need && org.wallet > 0)) return false;
+  const u = org.unlimited, target = Math.max(u.refillTo, need), add = target - org.wallet;
+  if (add <= 0) return false;
+  org.wallet = target; u.refills = (u.refills || 0) + 1; u.total = (u.total || 0) + add;
+  S.ledger.push({ id: newId('t'), at: Date.now(), orgId: org.id, orgName: org.name, type: 'refill', amount: add, memo: '무제한(기간제) 자동 충전', walletAfter: org.wallet });
+  save(); emit('room', {}, org.id);
+  return true;
+}
+const afterSpend = org => { if (org.wallet <= 0) ensureFunds(org, 1); }; // 다 쓰면 다시 채움
+function reserveTokens(org, n) { if (n <= 0) return true; ensureFunds(org, n); if (org.wallet < n) return false; org.wallet -= n; save(); return true; }
 function refundTokens(org, n) { if (n > 0) { org.wallet += n; save(); emit('room', {}, org.id); } }
-function chargeRecord(org, n, info) { if (n > 0) record(org, { type: 'bot', amount: n, ...info }); }   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
+function chargeRecord(org, n, info) { if (n > 0) { record(org, { type: 'bot', amount: n, ...info }); afterSpend(org); } }   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
 for (const e of S.experts) {
   if (typeof e.balance !== 'number') e.balance = 0;
   if (e.rate === undefined) e.rate = null;        // 시간당 토큰 (전문가가 직접 정함)
@@ -481,6 +496,7 @@ async function callExpert(room, ex, question, opt = {}) {
   }
   if (opt.joined) {
     const org = orgById(room.orgId) || {};
+    ensureFunds(org, opt.rate);
     const low = org.wallet < opt.rate ? `\n주의: 이 기업의 잔액은 ${org.wallet}토큰으로 1시간 단가보다 적어요 (약 ${fmtMin(coverMinutes(org.wallet, opt.rate))} 상담분).` : '';
     const text = `기업이 ${ex.name}님의 참여를 승인했어요. 지금부터 상담 시간이 계산돼요 (시간당 ${opt.rate}토큰).${low}\n팀방에서 /send 로 기업에 보낼 수 있어요. 마칠 때는 /end`;
     const g = room.xg && S.expertGroups[room.xg];
@@ -560,6 +576,7 @@ function checkBalances() {
     const org = orgById(room.orgId), ex = expertById(exId); if (!org || !ex) continue;
     const minutes = Math.round((Date.now() - c.startAt) / 60000);
     if (minutes < 1 || suggestTokens(minutes, c.rate) < org.wallet) continue;
+    if (unlimitedActive(org)) { ensureFunds(org, suggestTokens(minutes, c.rate) + c.rate); continue; } // 무제한이면 경고 대신 조용히 채움
     c.warned = true; save();
     addMsg(room, { from: 'sys', text: `상담 ${minutes}분이 지나 계산 토큰이 잔액(${org.wallet}개)에 닿았어요. ${ex.name} 전문가에게 알렸어요.` });
     dmExpert(ex, room, `알림: 상담 ${minutes}분이 지나 단가 기준 토큰이 이 기업의 잔액(${org.wallet}개)에 닿았어요. 이후 시간은 토큰을 받지 못할 수 있어요.\n계속할지 정해 주세요.`,
@@ -874,7 +891,7 @@ async function adminApi(req, res, p, sess) {
   if (p === '/api/admin/logout') { delete S.sessions[sess.token]; save(); return json(res, 200, { ok: true }, { 'set-cookie': cookie('', 0) }); }
   if (p === '/api/admin/state') return json(res, 200, {
     telegram: { enabled: !!tgUsername, username: tgUsername },
-    orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
+    orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
     ledger: S.ledger.slice(-500).reverse()
@@ -896,9 +913,28 @@ async function adminApi(req, res, p, sess) {
     save(); emit('room', {}, org.id);
     return json(res, 200, { ok: true, orgId: org.id });
   }
-  let m = p.match(/^\/api\/admin\/orgs\/(\w+)\/(users|charge|deduct|rename|delete|unpublish)$/);
+  let m = p.match(/^\/api\/admin\/orgs\/(\w+)\/(users|charge|deduct|rename|delete|unpublish|unlimited|unlimited-off)$/);
   if (m) {
     const org = orgById(m[1]); if (!org) return BAD(res, '없는 기업이에요', 404);
+    if (m[2] === 'unlimited') {
+      // until: YYYY-MM-DD (그날 23:59:59 한국 시간까지)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(b.until || '')) return BAD(res, '끝나는 날짜를 정해 주세요');
+      const until = Date.parse(`${b.until}T23:59:59+09:00`);
+      if (!(until > Date.now())) return BAD(res, '끝나는 날짜는 오늘 이후여야 해요');
+      if (until - Date.now() > 366 * 864e5) return BAD(res, '기간은 1년까지 정할 수 있어요');
+      const refillTo = Number(b.refillTo);
+      if (!Number.isInteger(refillTo) || refillTo < 1 || refillTo > 100000) return BAD(res, '채울 수량은 1~100000 사이 정수로 정해 주세요');
+      const prev = org.unlimited && unlimitedActive(org) ? org.unlimited : null;
+      org.unlimited = { until, untilDate: b.until, refillTo, grantedAt: prev ? prev.grantedAt : Date.now(), memo: str(b.memo, 100), refills: prev ? prev.refills : 0, total: prev ? prev.total : 0 };
+      save();
+      ensureFunds(org, refillTo); // 지금 잔액이 채울 수량보다 적으면 바로 채움
+      return json(res, 200, { ok: true, wallet: org.wallet });
+    }
+    if (m[2] === 'unlimited-off') {
+      if (!org.unlimited) return BAD(res, '무제한 설정이 없어요');
+      org.unlimited.until = Math.min(org.unlimited.until, Date.now() - 1); org.unlimited.endedEarly = true; save();
+      return json(res, 200, { ok: true });
+    }
     if (m[2] === 'unpublish') { if (!org.site || !org.site.published) return BAD(res, '게시된 페이지가 없어요'); org.site.published = null; save(); emit('room', {}, org.id); return json(res, 200, { ok: true }); }
     if (m[2] === 'users') {
       const loginId = str(b.loginId, 30).toLowerCase();
@@ -1216,10 +1252,12 @@ async function userApi(req, res, p, sess) {
     const ex = expertById(src.pay.expertId); if (!ex) return BAD(res, '전문가가 삭제됐어요', 404);
     if (b.skip) { src.pay.paid = 0; save(); emit('room', { roomId: room.id }, org.id); return json(res, 200, { ok: true }); }
     const amt = toAmount(b.amount); if (!amt) return BAD(res, '1 이상의 정수로 입력해 주세요');
+    ensureFunds(org, amt);
     if (amt > org.wallet) return BAD(res, `잔액이 부족해요 (현재 ${org.wallet}개). 관리자에게 충전을 요청해 주세요.`);
     org.wallet -= amt; ex.balance += amt; src.pay.paid = amt;
     const memo = str(b.memo, 200);
     record(org, { type: 'pay', amount: amt, expertId: ex.id, expertName: ex.name, expertAfter: ex.balance, roomId: room.id, roomName: room.name, memo, minutes: src.pay.minutes, rate: src.pay.rate, suggested: src.pay.suggested });
+    afterSpend(org);
     addMsg(room, { from: 'sys', text: `${ex.name} 전문가에게 상담 토큰 ${amt}개를 보냈어요 (남은 잔액 ${org.wallet}개)` });
     if (ex.tgChatId) dmExpert(ex, room, `상담 토큰 ${amt}개를 받았어요.${memo ? '\n메시지: ' + memo : ''}\n현재 잔액: ${ex.balance}개`);
     return json(res, 200, { ok: true, wallet: org.wallet });
@@ -1241,6 +1279,7 @@ async function userApi(req, res, p, sess) {
       question = `아래 초안을 검토해 주세요. 사실과 다르거나 과장된 표현이 있는지 봐 주시면 좋아요.\n\n--- ${who} 초안 ---\n${src.text}`;
     }
     // 새 상담인데 잔액이 1시간 단가보다 적으면 바로 연결하지 않고 전문가에게 먼저 물음
+    if (!inRoom) ensureFunds(org, ex.rate);
     if (!inRoom && org.wallet < ex.rate) {
       const err = await requestCall(room, ex, question);
       return err ? BAD(res, err) : json(res, 200, { ok: true, requested: true });
