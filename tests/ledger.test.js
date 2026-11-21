@@ -35,7 +35,7 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   for (const k in U) { await U[k]('/api/login', { loginId: 'org' + k, password: 'password1' }); room[k] = (await U[k]('/api/state')).j.rooms[0].id; }
   const W = async k => (await U[k]('/api/state')).j.wallet, msgs = async k => (await U[k]('/api/state')).j.rooms[0].msgs;
   const chain = async () => (await Ad('/api/admin/state')).j.chain;
-  const ok = async label => { await sl(220); const c = await chain(); chk(`${label} → 발행량 = 잔액 합 (${c.supply.supply})`, c.supply.ok && c.txs.every(t => t.status === 'confirmed')); return c; };
+  const ok = async label => { await sl(220); const c = await chain(); chk(`${label} → 발행량 = 잔액 합 (${c.supply.supply})`, c.supply.ok && c.txs.every(t => t.layer === 'chain' ? t.status === 'confirmed' && t.blockNumber : t.status === 'recorded' && !t.blockNumber)); return c; };
   const kinds = async () => (await chain()).txs.map(t => t.kind);
 
   for (const k of ['A', 'B', 'E']) await Ad(`/api/admin/orgs/${oid[k]}/charge`, { amount: 100 });
@@ -103,6 +103,16 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   const raw = JSON.stringify({ type: 'burn', address: tre.address, amount: 1, idempotencyKey: 'x1' });
   const noTre = await new Promise(r => { const q = http.request('http://localhost:3973/chain/v1/tx', { method: 'POST', headers: CH.signedHeaders(KN.keyId, KN.secret, 'POST', '/chain/v1/tx', raw) }, res => { let s = ''; res.on('data', x => s += x); res.on('end', () => r(res.statusCode)); }); q.write(raw); q.end(); });
   chk('treasury 권한 없는 키로는 운영 기관 지갑 못 건드림', noTre === 403);
+  // 블록에는 충전·환전만: 지금까지 함께봇 안의 이동은 블록이 없음
+  c = await chain();
+  chk('함께봇 안의 이동은 내부 장부에만 (블록 0)', c.blockNumber === 0 && c.supply.chain.reserve === 0 && c.txs.every(t => t.layer === 'internal'));
+  const sgn = async (key, body) => { const r = JSON.stringify(body); return new Promise(res => { const q = http.request('http://localhost:3973/chain/v1/tx', { method: 'POST', headers: CH.signedHeaders(key.keyId, key.secret, 'POST', '/chain/v1/tx', r) }, rs => { let s = ''; rs.on('data', x => s += x); rs.on('end', () => res({ s: rs.statusCode, j: JSON.parse(s) })); }); q.write(r); q.end(); }); };
+  const no = await sgn(K, { type: 'burn', address: tre.address, amount: 1, idempotencyKey: 'pre1' });
+  chk('체인 준비금이 0이면 환전 못 함 (함께봇 안에서만 생긴 토큰이 밖으로 새지 않게)', no.s === 400 && no.j.error.includes('체인 준비금'));
+  const bAddr = (await U.B('/api/state')).j.address;
+  await sgn(K, { type: 'mint', address: bAddr, amount: 50, ref: 'ord_t', idempotencyKey: 'ord_t' }); await sl(250);
+  c = await chain();
+  chk('충전 페이지 충전만 블록에 담김 → 준비금 50', c.blockNumber === 1 && c.supply.chain.reserve === 50 && c.txs.filter(t => t.layer === 'chain').length === 1);
   Object.assign(process.env, { HB_API: 'http://localhost:3973', HB_KEY: K.keyId, HB_SECRET: K.secret, PORTAL_PORT: '3972', PORTAL_ADMIN_PASSWORD: 'portalpw', PORTAL_DATA: PDATA });
   require(path.join(__dirname, '..', 'portal', 'server.js')); await sl(200);
   const OP = mk(3972); await OP('/admin', { password: 'portalpw' }, true);
