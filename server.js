@@ -66,7 +66,9 @@ if (!S.dmMap) S.dmMap = {};
 if (!S.expertLogins) S.expertLogins = {}; // 전문가 웹 로그인용 1회용 코드
 if (!S.expertGroups) S.expertGroups = {};
 if (!S.botCosts) S.botCosts = {};
-if (!S.posts) S.posts = [];     // 게시판 [{id,board:'qna'|'rec',orgId,by,at,title,body,secret,botId,rating,kind,likes:[orgId],replies:[],hidden,pinned}]
+if (!S.posts) S.posts = [];
+if (!S.talents) S.talents = [];  // 인재 추천 [{id,orgId,by,at,status:'draft'|'open'|'closed',profile,private:{name,contact},consentBy,picks:[{orgId,at,amount}],hidden}]
+if (S.qseq == null) S.qseq = 0;  // 질문 버튼 번호 (텔레그램 /answer 번호)     // 게시판 [{id,board:'qna'|'rec',orgId,by,at,title,body,secret,botId,rating,kind,likes:[orgId],replies:[],hidden,pinned}]
 if (!S.claims) S.claims = [];   // 원작 기업의 복사 신고 [{id,at,orgId,origBotId,targetBotId,targetText,want,reason,status,note,decidedAt}]
 if (!S.customBots) S.customBots = [];   // 봇 마켓: 기업이 직접 만든 봇           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
 // 요청당 토큰: 관리자 설정 > bots.js 기본값. 'summary'는 함께봇 문서 정리
@@ -392,6 +394,7 @@ async function runBot(room, botId, text, ctx = {}) {
   if (bot.kind === 'site') run = () => runSiteBot(bot, room, org, text);
   else if (bot.kind === 'sched') { const mode = schedMode(text); costId = mode === 'detail' ? 'sched_detail' : mode === 'ppt' ? 'sched_ppt' : 'sched'; run = () => runSchedBot(bot, room, org, text, mode, ctx); }
   else if (bot.kind === 'todo') { const mode = ctx.auto ? 'review' : todoMode(text); costId = mode === 'review' ? 'todo_review' : mode === 'detail' ? 'todo_detail' : mode === 'ppt' ? 'todo_ppt' : 'todo'; run = () => runSchedBot(bot, room, org, text, mode, ctx, 'todo'); }
+  else if (bot.kind === 'talent') run = () => runTalentBot(bot, room, org, text, ctx);
   else if (bot.kind === 'ir') { const mode = irMode(org, text); costId = mode === 'create' ? 'ir' : mode === 'vc' ? 'ir_vc' : 'ir_update'; run = () => runIrBot(bot, room, org, text, mode); }
   else if (isDeck) { costId = bot.custom ? 'custom_ppt' : `${bot.id}_ppt`; run = () => runDeckBot(bot, room, org, text); }
   else run = () => askClaude(bot, room, text);
@@ -416,7 +419,7 @@ async function runBot(room, botId, text, ctx = {}) {
   org.botUse = org.botUse || {}; org.botUse[bot.id] = (org.botUse[bot.id] || 0) + 1; // 봇 추천 게시판: 써 본 봇만 추천
   if (bot.custom) { const c = S.customBots.find(x => x.id === bot.id); if (c) { c.stats = c.stats || { uses: 0, earned: 0, byOrg: {} }; c.stats.uses++; c.stats.byOrg[org.id] = (c.stats.byOrg[org.id] || 0) + 1; } }
   if (share) payShare(org, cb, share, sh.type, room, sh.type === 'royalty' ? sh.origin : null);
-  say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}) });
+  say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}), ...(r.talent ? { talent: r.talent } : {}) });
   if (r.after) r.after();
   if (r.deck && room.tgChatId) { const d = deckById(org, r.deck.id); if (d) tgSendDoc(room.tgChatId, deckFileName(org, d), await DECK.buildDeck(d.outline, org.name), `${d.title} (PPT v${d.n})`, PPTX_MIME); }
 }
@@ -1225,6 +1228,16 @@ async function handleTelegram(msg) {
     cmd = cm[1].toLowerCase(); arg = cm[3].trim();
   }
 
+  // 관리자 답변 단톡 연결·처리
+  if (cmd === 'adminlink') {
+    const L = S.adminLink;
+    if (isPrivate) return tgSend(chat.id, '관리자 답변 방은 그룹에서 연결해 주세요.');
+    if (!L || L.code !== arg.toUpperCase() || L.exp < Date.now()) return tgSend(chat.id, '코드가 맞지 않거나 시간이 지났어요. 관리자 페이지에서 새 코드를 만들어 주세요.');
+    if (roomByChat(chat.id) || S.expertGroups[chat.id]) return tgSend(chat.id, '기업 방이나 전문가 팀방으로 쓰는 그룹은 관리자 답변 방으로 쓸 수 없어요.');
+    S.adminTg = { chatId: chat.id, title: chat.title || '', linkedAt: Date.now(), by: name }; S.adminLink = null; save(); emit('room', {}, '*');
+    return tgSend(chat.id, `이 그룹을 관리자 답변 방으로 연결했어요. 기업이 질문 버튼으로 물으면 여기로 와요.\n${ADMIN_TG_HELP}`);
+  }
+  if (S.adminTg && chat.id === S.adminTg.chatId) return handleAdminGroup(msg, cmd, arg, name);
   if (cmd === 'expert') {
     if (!isPrivate) return tgSend(chat.id, '전문가 등록은 봇과의 1:1 대화에서 해 주세요.');
     const ex = S.experts.find(e => e.regCode && e.regCode === arg.toUpperCase());
@@ -1324,6 +1337,75 @@ async function pollTelegram() {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const json = (res, code, obj, headers) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...(headers || {}) }); res.end(JSON.stringify(obj)); };
 const body = req => new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(d || '{}')); } catch (_) { ok({}); } }); });
+// ---------- 인재 추천 봇 ----------
+// 다른 기업에는 경력·기술만 보여 주고, 이름·연락처는 그 인재를 고른 기업에만. 본인 동의를 확인해야 올라감
+const SENSITIVE_RE = /\d{6}\s*-\s*[1-4]\d{6}|주민\s*(등록)?\s*번호|여권\s*번호|계좌\s*번호/;
+const cleanList = (a, n, len) => (Array.isArray(a) ? a : []).map(v => str(v, len)).filter(Boolean).slice(0, n);
+function talentView(org, t) {
+  const picked = t.picks.find(p => p.orgId === org.id), mine = t.orgId === org.id;
+  return { id: t.id, at: t.at, status: t.status, hidden: !!t.hidden, orgName: (orgById(t.orgId) || {}).name || '', mine, profile: t.profile, picks: t.picks.length, picked: !!picked, fee: costOf('talent_pick'), ...(mine || picked ? { private: t.private } : {}), ...(mine ? { earned: t.picks.reduce((a, p) => a + p.amount, 0), pickedBy: t.picks.map(p => (orgById(p.orgId) || {}).name) } : {}) };
+}
+async function runTalentBot(bot, room, org, text, ctx) {
+  if (SENSITIVE_RE.test(text)) return { error: '주민등록번호·여권번호·계좌번호 같은 정보는 받지 않아요. 그 부분을 빼고 다시 보내 주세요.' };
+  const system = `${bot.role}
+
+아래 메시지에서 추천하는 인재 한 명의 정보를 뽑으세요. JSON 하나만 출력:
+{"ok":true,"profile":{"title":"한 줄 소개 (예: 패키지 디자이너 · 3년차)","field":"분야","years":"경력 (말에 있을 때만, 예: 3년)","skills":["기술·도구"],"summary":"어떤 일을 잘하는지 2~3문장","region":"일할 수 있는 지역 (말에 있을 때만)","workType":"정규직·계약직·프리랜서·파트타임 등 (말에 있을 때만)","strengths":["추천하는 기업이 본 강점"]},"private":{"name":"이름","contact":"전화·이메일 등 연락 방법"},"consent":true|false}
+- consent: 추천하는 사람이 "본인 동의를 받았다"고 분명히 말했을 때만 true.
+- 인재 정보가 부족하면 {"ok":false,"ask":"더 필요한 것 한 문장"}.
+- 나이·생년·성별·결혼·가족·건강·종교·출신·사진·주민번호·주소 상세는 넣지 마세요. 말에 없는 경력·기술을 지어내지 마세요.`;
+  const r = await callClaude(system, `[${ctx.author || '기업방'}] ${text}`, 1500);
+  if (r.error) return { error: r.error };
+  const j = parseJson(r.text) || {};
+  if (!j.ok || !j.profile) return { free: true, text: j.ask ? str(j.ask, 200) : '추천할 인재의 분야·경력·잘하는 일·연락 방법을 알려 주세요. 예: "패키지 디자이너 박지은 추천, 3년차, 일러스트레이터 능숙, 010-1234-5678, 본인 동의 받았어요"' };
+  const pf = j.profile, profile = { title: str(pf.title, 50), field: str(pf.field, 30), years: str(pf.years, 20), skills: cleanList(pf.skills, 8, 30), summary: str(pf.summary, 400), region: str(pf.region, 30), workType: str(pf.workType, 30), strengths: cleanList(pf.strengths, 4, 80) };
+  if (!profile.title || !profile.summary) return { free: true, text: '인재 정보를 정리하지 못했어요. 분야·경력·잘하는 일을 조금 더 알려 주세요.' };
+  const priv = { name: str(j.private && j.private.name, 30), contact: str(j.private && j.private.contact, 100) };
+  const t = { id: newId('h'), orgId: org.id, by: ctx.author || '기업방', at: Date.now(), status: 'draft', profile, private: priv, consentSaid: !!j.consent, picks: [], roomId: room.id };
+  S.talents.push(t); save();
+  return { text: `인재 추천 초안을 만들었어요: ${profile.title}\n아래 카드에서 내용을 확인하고, 본인 동의를 받았으면 "인재 추천에 올리기"를 눌러 주세요. 다른 기업에는 이름·연락처 없이 경력·기술만 보여요.${priv.contact ? '' : '\n(연락 방법이 없어요. 고른 기업이 연락할 수 있게 추천 기업이 직접 이어 주셔야 해요.)'}`, talent: { id: t.id, status: 'draft', profile, private: priv, consentSaid: t.consentSaid }, tgText: `인재 추천 초안 "${profile.title}"을 만들었어요. 웹앱 기업방에서 본인 동의를 확인하고 올려 주세요.` };
+}
+
+// ---------- 질문 버튼 → 관리자 텔레그램 답변 단톡 → /answer → Q&A 게시판 ----------
+// S.adminTg = { chatId, title, linkedAt } (관리자가 만든 코드로 그룹에서 /adminlink)
+async function askAdmin(org, user, text, secret) {
+  const n = ++S.qseq;
+  const x = { id: newId('p'), board: 'qna', orgId: org.id, by: user.name, at: Date.now(), title: str(text.split('\n')[0], 40) + (text.length > 40 ? '…' : ''), body: text, likes: [], replies: [], hidden: false, pinned: false, secret: secret !== false, quick: n };
+  S.posts.push(x); save(); emit('board', { board: 'qna' }, '*');
+  if (S.adminTg && TG_TOKEN) {
+    const r = await tg('sendMessage', { chat_id: S.adminTg.chatId, text: `❓ 질문 #${n} · ${org.name} (${user.name})${x.secret ? ' · 비밀글' : ''}\n\n${text}\n\n답하려면 이 메시지에 답장으로 /answer 답변 내용\n또는 /answer ${n} 답변 내용` });
+    if (r && r.ok) { x.tgMsgId = r.result.message_id; save(); }
+  }
+  return x;
+}
+function answerQuestion(x, text, by, via) {
+  x.replies.push({ id: newId('r'), at: Date.now(), orgId: null, admin: true, by: '운영 기관', answeredBy: by, via, body: text });
+  x.unreadAnswer = true; save();
+  notifyOrg(x.orgId, `운영 기관이 질문${x.quick ? ` #${x.quick}` : ''} "${x.title}"에 답했어요: ${text.length > 120 ? text.slice(0, 120) + '…' : text}\n(Q&A 게시판에 ${x.secret ? '비밀글로 ' : ''}등록됐어요)`);
+  emit('board', { board: 'qna', id: x.id, answer: true }, '*');
+}
+const ADMIN_TG_HELP = '관리자 답변 방이에요.\n· /answer 번호 답변 — 질문에 답하기 (질문 메시지에 답장하면 번호 없이 /answer 답변)\n· /questions — 답을 기다리는 질문 보기';
+async function handleAdminGroup(msg, cmd, arg, name) {
+  const chat = msg.chat;
+  if (cmd === 'questions' || cmd === 'q') {
+    const open = S.posts.filter(x => x.quick && !x.replies.some(r => r.admin) && !x.hidden).slice(-15);
+    return tgSend(chat.id, open.length ? `답을 기다리는 질문 ${open.length}개\n\n${open.map(x => `#${x.quick} ${(orgById(x.orgId) || {}).name} — ${x.body.slice(0, 80)}`).join('\n')}` : '답을 기다리는 질문이 없어요.');
+  }
+  if (cmd === 'answer' || cmd === 'a') {
+    let x = null, text = arg;
+    const rep = msg.reply_to_message && msg.reply_to_message.message_id;
+    if (rep) x = S.posts.find(p => p.quick && p.tgMsgId === rep);
+    if (!x) { const m = arg.match(/^#?(\d+)\s+([\s\S]+)$/); if (m) { x = S.posts.find(p => p.quick === +m[1]); text = m[2]; } }
+    text = String(text || '').trim().slice(0, 2000);
+    if (!x) return tgSend(chat.id, '어느 질문인지 모르겠어요. 질문 메시지에 답장으로 /answer 답변, 또는 /answer 번호 답변 으로 보내 주세요.\n' + ADMIN_TG_HELP);
+    if (text.length < 2) return tgSend(chat.id, `질문 #${x.quick}에 보낼 답변을 적어 주세요.`);
+    const before = x.replies.some(r => r.admin);
+    answerQuestion(x, text, name, 'telegram');
+    return tgSend(chat.id, `#${x.quick} ${(orgById(x.orgId) || {}).name}에 답변을 보냈어요${before ? ' (추가 답변)' : ''} — ${name}. Q&A 게시판에 ${x.secret ? '비밀글로 ' : ''}등록됐어요.`);
+  }
+  if (cmd === 'start' || cmd === 'help') return tgSend(chat.id, ADMIN_TG_HELP);
+}
+
 // ---------- 게시판 (Q&A 비밀글 · 봇 추천) ----------
 // Q&A 비밀글: 쓴 기업과 운영 기관만. 공개 Q&A·봇 추천: 모든 기업. 운영 기관이 숨긴 글은 쓴 기업에만 (숨김 표시)
 const canSeePost = (org, p) => p.orgId === org.id || (!p.hidden && (p.board === 'rec' || !p.secret));
@@ -1376,6 +1458,8 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
+    adminTg: S.adminTg ? { title: S.adminTg.title, linkedAt: S.adminTg.linkedAt, by: S.adminTg.by } : null, tgReady: !!TG_TOKEN,
+    talents: S.talents.filter(t => t.status !== 'draft').sort((a, b) => b.at - a.at).slice(0, 100).map(t => ({ id: t.id, at: t.at, status: t.status, hidden: !!t.hidden, orgName: (orgById(t.orgId) || {}).name, profile: t.profile, consentBy: t.consentBy, picks: t.picks.map(p => ({ orgName: (orgById(p.orgId) || {}).name, at: p.at, amount: p.amount })) })),
     posts: S.posts.slice().sort((a, b) => b.at - a.at).slice(0, 200).map(x => ({ ...postView(null, x, true), hideReason: x.hideReason || '', canReply: true })),
     claims: S.claims.slice().sort((x, y) => (x.status === 'open' ? 0 : 1) - (y.status === 'open' ? 0 : 1) || y.at - x.at).slice(0, 50).map(cl => {
       const o = S.customBots.find(x => x.id === cl.origBotId), t = cl.targetBotId && S.customBots.find(x => x.id === cl.targetBotId);
@@ -1461,14 +1545,26 @@ async function adminApi(req, res, p, sess) {
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
   }
+  if (p === '/api/admin/tg-admin/code') { S.adminLink = { code: crypto.randomBytes(4).toString('hex').toUpperCase(), exp: Date.now() + 10 * 6e4 }; save(); return json(res, 200, { code: S.adminLink.code, bot: tgUsername || null }); }
+  if (p === '/api/admin/tg-admin/unlink') { if (S.adminTg) tgSend(S.adminTg.chatId, '관리자 답변 방 연결을 해제했어요.'); S.adminTg = null; save(); return json(res, 200, { ok: true }); }
+  const hm = p.match(/^\/api\/admin\/talent\/(\w+)\/(hide|delete)$/);
+  if (hm) {
+    const t = S.talents.find(x => x.id === hm[1]); if (!t) return BAD(res, '없는 추천이에요', 404);
+    if (hm[2] === 'hide') { t.hidden = !!b.hidden; if (t.hidden) notifyOrg(t.orgId, `운영 기관이 인재 추천 "${t.profile.title}"을(를) 숨겼어요${b.reason ? `: ${str(b.reason, 100)}` : '.'}`); }
+    else { S.talents = S.talents.filter(x => x !== t); notifyOrg(t.orgId, `운영 기관이 인재 추천 "${t.profile.title}"을(를) 지웠어요${b.reason ? `: ${str(b.reason, 100)}` : '.'}`); }
+    save(); emit('board', { board: 'talent' }, '*'); return json(res, 200, { ok: true });
+  }
   // 게시판 관리: 답변 · 숨기기 · 고정 · 삭제
   const pm = p.match(/^\/api\/admin\/board\/(\w+)\/(reply|hide|pin|delete)$/);
   if (pm) {
     const x = S.posts.find(y => y.id === pm[1]); if (!x) return BAD(res, '없는 글이에요', 404);
     if (pm[2] === 'reply') {
       const text = String(b.body == null ? '' : b.body).replace(/\r/g, '').trim().slice(0, 2000); if (text.length < 2) return BAD(res, '답변을 적어 주세요');
-      x.replies.push({ id: newId('r'), at: Date.now(), orgId: null, admin: true, by: '운영 기관', body: text }); x.unreadAnswer = true;
-      notifyOrg(x.orgId, `운영 기관이 ${x.board === 'qna' ? `${x.secret ? '비밀글 ' : ''}질문` : '게시판 글'} "${x.title}"에 답했어요. "게시판"에서 확인하세요.`);
+      if (x.quick) { answerQuestion(x, text, '관리자 웹', 'web'); if (S.adminTg && TG_TOKEN) tgSend(S.adminTg.chatId, `#${x.quick}에 관리자 웹에서 답변했어요: ${text.slice(0, 200)}`); }
+      else {
+        x.replies.push({ id: newId('r'), at: Date.now(), orgId: null, admin: true, by: '운영 기관', body: text }); x.unreadAnswer = true;
+        notifyOrg(x.orgId, `운영 기관이 ${x.board === 'qna' ? `${x.secret ? '비밀글 ' : ''}질문` : '게시판 글'} "${x.title}"에 답했어요. "게시판"에서 확인하세요.`);
+      }
     } else if (pm[2] === 'hide') { x.hidden = !!b.hidden; x.hideReason = x.hidden ? str(b.reason, 100) : ''; if (x.hidden) notifyOrg(x.orgId, `운영 기관이 게시판 글 "${x.title}"을(를) 숨겼어요${x.hideReason ? `: ${x.hideReason}` : '.'}`); }
     else if (pm[2] === 'pin') x.pinned = !!b.pinned;
     else S.posts = S.posts.filter(y => y !== x);
@@ -1647,6 +1743,68 @@ async function userApi(req, res, p, sess) {
       boardUnread: S.posts.filter(x => x.orgId === org.id && x.unreadAnswer).length,
       todo: org.todo || todoRooms(org).length ? (() => { const td = ensureTodo(org), t = todayKst(), nx = TODO.upcoming(td, t); return { url: todoUrl(org), editUrl: todoEditUrl(org), v: td.v, next: nx, left: SCHED.diffDays(t, nx), days: td.cycle.days, count: td.items.filter(x => x.status === 'active').length }; })() : null
     });
+  // ----- 인재 추천 -----
+  if (p.startsWith('/api/talent')) {
+    if (p === '/api/talent' && req.method === 'GET') {
+      const list = S.talents.filter(t => (t.status === 'open' && !t.hidden) || (t.orgId === org.id && t.status !== 'draft') || t.picks.some(x => x.orgId === org.id)).sort((a, b) => b.at - a.at).slice(0, 200).map(t => talentView(org, t));
+      return json(res, 200, { items: list, fee: costOf('talent_pick') });
+    }
+    if (p === '/api/talent/get' && req.method === 'GET') {
+      const t = S.talents.find(x => x.id === new URL(req.url, 'http://x').searchParams.get('id') && x.orgId === org.id); if (!t) return BAD(res, '없는 추천이에요', 404);
+      return json(res, 200, talentView(org, t));
+    }
+    if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
+    const b = await body(req), t = S.talents.find(x => x.id === b.id);
+    if (!t) return BAD(res, '없는 추천이에요', 404);
+    const card = () => { for (const r of S.rooms.filter(r => r.orgId === t.orgId)) for (const m of r.msgs) if (m.talent && m.talent.id === t.id) { m.talent.status = t.status; m.talent.profile = t.profile; m.talent.private = t.status === 'deleted' ? null : t.private; } };
+    if (p === '/api/talent/publish') {
+      if (t.orgId !== org.id || t.status !== 'draft') return BAD(res, '올릴 수 있는 초안이 아니에요', 404);
+      if (b.consent !== true) return BAD(res, '추천하는 분에게 인재 추천에 올려도 된다는 동의를 받았는지 확인해 주세요');
+      if (b.profile) { // 기업이 카드에서 고친 내용
+        const pf = b.profile; t.profile = { ...t.profile, title: str(pf.title, 50) || t.profile.title, summary: str(pf.summary, 400) || t.profile.summary, skills: pf.skills ? cleanList(String(pf.skills).split(/[,·]/), 8, 30) : t.profile.skills };
+        if (b.private) t.private = { name: str(b.private.name, 30), contact: str(b.private.contact, 100) };
+        if (SENSITIVE_RE.test(JSON.stringify([t.profile, t.private]))) return BAD(res, '주민등록번호·계좌번호 같은 정보는 넣을 수 없어요');
+      }
+      t.status = 'open'; t.consentBy = user.name; t.consentAt = Date.now(); t.at = Date.now(); card(); save(); emit('board', { board: 'talent' }, '*');
+      const rr = S.rooms.find(r => r.id === t.roomId); if (rr) addMsg(rr, { from: 'sys', text: `${user.name}님이 본인 동의를 확인하고 "${t.profile.title}"을(를) 인재 추천에 올렸어요. 다른 기업이 고르면 ${costOf('talent_pick')}토큰을 받아요.` });
+      return json(res, 200, talentView(org, t));
+    }
+    if (p === '/api/talent/discard' || p === '/api/talent/close' || p === '/api/talent/delete') {
+      if (t.orgId !== org.id) return BAD(res, '우리 기업이 추천한 인재가 아니에요', 403);
+      if (p === '/api/talent/close') { if (t.status !== 'open') return BAD(res, '올라가 있는 추천이 아니에요'); t.status = 'closed'; }
+      else { S.talents = S.talents.filter(x => x !== t); t.status = 'deleted'; t.private = { name: '', contact: '' }; } // 지우면 개인정보도 지움
+      card(); save(); emit('board', { board: 'talent' }, '*'); return json(res, 200, { ok: true });
+    }
+    if (p === '/api/talent/pick') {
+      if (t.status !== 'open' || t.hidden) return BAD(res, '지금 고를 수 없는 인재예요', 404);
+      if (t.orgId === org.id) return BAD(res, '우리 기업이 추천한 인재는 고를 수 없어요');
+      if (t.picks.some(x => x.orgId === org.id)) return BAD(res, '이미 고른 인재예요');
+      const fee = costOf('talent_pick'), rec = orgById(t.orgId);
+      if (!reserveTokens(org, fee)) return BAD(res, `인재를 고르려면 ${fee}토큰이 필요해요. 잔액(${org.wallet}토큰)이 부족해요.`);
+      t.picks.push({ orgId: org.id, at: Date.now(), amount: rec ? fee : 0, by: user.name });
+      if (fee > 0) {
+        record(org, { type: 'talent_pick', amount: fee, talentId: t.id, talentTitle: t.profile.title, toOrgName: rec ? rec.name : '' }); afterSpend(org);
+        if (rec) { rec.wallet += fee; record(rec, { type: 'talent_pick_in', amount: fee, talentId: t.id, talentTitle: t.profile.title, fromOrgName: org.name }); }
+      }
+      if (rec) notifyOrg(rec.id, `${org.name}이(가) 우리가 추천한 "${t.profile.title}"을(를) 골랐어요. ${fee}토큰을 받았어요. 연락처를 받은 ${org.name}이(가) 직접 연락할 거예요 — 추천한 분께도 알려 주세요.`);
+      notifyOrg(org.id, `"${t.profile.title}" 인재를 골랐어요 (${fee}토큰). 이름·연락처: ${t.private.name || '-'} · ${t.private.contact || '추천 기업에 문의'} (추천: ${rec ? rec.name : '-'})`);
+      save(); emit('board', { board: 'talent' }, '*');
+      return json(res, 200, talentView(org, t));
+    }
+    return BAD(res, '없는 기능이에요', 404);
+  }
+  // ----- 질문 버튼 -----
+  if (p === '/api/ask' && req.method === 'GET') {
+    const mine = S.posts.filter(x => x.quick && x.orgId === org.id).slice(-30).map(x => ({ id: x.id, n: x.quick, at: x.at, by: x.by, body: x.body, secret: x.secret, answers: x.replies.filter(r => r.admin).map(r => ({ at: r.at, body: r.body })) }));
+    return json(res, 200, { items: mine, live: !!(S.adminTg && TG_TOKEN) });
+  }
+  if (p === '/api/ask' && req.method === 'POST') {
+    const b = await body(req), text = String(b.text == null ? '' : b.text).replace(/\r/g, '').trim().slice(0, 2000);
+    if (text.length < 2) return BAD(res, '질문을 적어 주세요');
+    if (S.posts.filter(x => x.quick && x.orgId === org.id && Date.now() - x.at < 36e5).length >= 10) return BAD(res, '한 시간에 10개까지 물을 수 있어요');
+    const x = await askAdmin(org, user, text, b.secret);
+    return json(res, 200, { ok: true, id: x.id, n: x.quick, sent: !!x.tgMsgId });
+  }
   // ----- 게시판 -----
   if (p.startsWith('/api/board')) {
     const qs = new URL(req.url, 'http://x').searchParams;
