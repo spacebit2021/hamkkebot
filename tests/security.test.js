@@ -8,7 +8,7 @@ const chk = (n, c) => { if (!c) FAILS++; console.log((c ? 'PASS ' : 'FAIL ') + n
 const SITE = 'https://93.184.216.34', T0 = new Date(Date.now() + 9 * 36e5).toISOString().slice(0, 10);
 const at = (d, hm) => String(Date.parse(`${d}T${hm}:00+09:00`)), next = d => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10);
 // 가짜 사이트 상태 (점검 사이에 바꿈)
-const W = { token: '', headers: { server: 'Apache/2.4.29', 'set-cookie': 'sid=abc; Path=/' }, body: '<html><img src="http://cdn.example.org/a.png"></html>', git: true, redirect: false, deep: false, serverStatus: true, panel: true, errLeak: true, methods: true, cors: true };
+const W = { token: '', headers: { server: 'Apache/2.4.29', 'set-cookie': 'sid=abc; Path=/' }, body: '<html><img src="http://cdn.example.org/a.png"></html>', git: true, redirect: false, deep: false, serverStatus: true, panel: true, errLeak: true, methods: true, cors: true, weakTls: true, installer: true, openRedirect: true };
 let aiFail = false; const prompts = [];
 const resp = (status, headers = {}, body = '') => ({ status, ok: status < 300, headers: { get: k => headers[k.toLowerCase()] == null ? null : headers[k.toLowerCase()], getSetCookie: () => headers['set-cookie'] ? [headers['set-cookie']] : [] }, text: async () => body });
 global.fetch = async (url, opt = {}) => {
@@ -28,12 +28,16 @@ global.fetch = async (url, opt = {}) => {
   if (u.startsWith(SITE + '/hb-check-')) return W.deep && W.errLeak ? resp(500, {}, 'Traceback (most recent call last):\n  File app.py line 42') : resp(404, {}, 'Not found');
   if (u.startsWith(SITE + '/uploads/') || u.startsWith(SITE + '/images/') || u.startsWith(SITE + '/files/') || u.startsWith(SITE + '/backup/')) return resp(404);
   if (/93\.184\.216\.34\/(\.env\.|\.svn|wp-config|config\.php|\.DS_Store|phpinfo|\.htaccess|backup\.sql|administrator|admin\/|phpmyadmin)/.test(u)) return resp(404);
+  if (u === SITE + '/wp-admin/install.php') return W.deep && W.installer ? resp(200, {}, '<html>WordPress &rsaquo; 설치</html>') : resp(404);
+  if (/93\.184\.216\.34\/(install\.php|setup\.php|wp-content\/debug\.log|readme\.html)/.test(u)) return resp(404);
+  if (u.includes('hb-redirect-test.example')) return W.deep && W.openRedirect ? resp(302, { location: 'https://hb-redirect-test.example/' }) : resp(200, W.headers, '');
   if (u.startsWith('https://93.184.216.35')) return resp(200, {}, '');
   return { ok: true, status: 200, json: async () => ({ ok: true, result: {} }) };
 };
 Object.assign(process.env, { ADMIN_PASSWORD: 'adminpass', ANTHROPIC_API_KEY: 'k', PORT: '3971', TELEGRAM_BOT_TOKEN: '', SEC_TICK_MS: '60', HB_NOW: at(T0, '05:00') });
 const SEC = require(path.join(__dirname, '..', 'security.js'));
 SEC.io.tlsInfo = async () => ({ validTo: Date.now() + 20 * 864e5, issuer: 'Test CA', protocol: 'TLSv1.3', authorized: true, error: null });
+SEC.io.weakTls = async () => (W.deep && W.weakTls) ? ['TLSv1.1'] : [];
 require(path.join(__dirname, '..', 'server.js'));
 const http = require('http');
 function mk() { let ck = ''; return (p, b) => new Promise(r => { const q = http.request('http://localhost:3971' + p, { method: b ? 'POST' : 'GET', headers: ck ? { cookie: ck } : {} }, res => { const sc = res.headers['set-cookie']; if (sc) ck = sc[0].split(';')[0]; let d = ''; res.on('data', c => d += c); res.on('end', () => { let j; try { j = JSON.parse(d); } catch (e) { j = d; } r({ s: res.statusCode, j }); }); }); if (b) q.write(JSON.stringify(b)); q.end(); }); }
@@ -104,13 +108,16 @@ const sl = ms => new Promise(r => setTimeout(r, ms));
   chk('사이트 목록: 인증 상태·지난 등급', (await say('A', '사이트 목록 보여 줘')).includes('인증됨 · 지난 점검'));
   // 긴급 심화 점검: 확인 없이는 실행 안 함
   W.deep = true;
+  W.body = '<html><head><meta name="generator" content="WordPress 5.2"></head><script src="/js/jquery-1.12.4.min.js"></script></html>';
   chk('긴급 심화 점검은 먼저 확인을 요구 (토큰 안 씀)', await (async () => { const w = await Wl('A'); await Ad(`/api/admin/orgs/${(await Ad('/api/admin/state')).j.orgs.find(o => o.name === '마을빵공방').id}/charge`, { amount: 100 }); const w2 = await Wl('A'); const t2 = await say('A', '긴급 심화 점검'); return t2.includes('긴급 심화 점검 확인') && t2.includes('공격·로그인 시도·부하는 하지 않아요') && await Wl('A') === w2; })());
   const wd = await Wl('A');
   await U.A(`/api/rooms/${room.A}/messages`, { text: '긴급 심화 점검 확인', to: 'security' }); await sl(600);
   const dmsg = (await msgs('A')).filter(m => m.from === 'security').pop();
   chk('확인하면 심화 점검 실행 (20토큰)', dmsg.text.startsWith('[보안 점검 · 심화]') && await Wl('A') === wd - 20 && dmsg.cost === 20);
   const dv = (await U.A('/api/bboard?bot=security')).j.posts[0].values;
-  chk('심화 점검 결과: 능동 점검으로 찾은 것 (server-status·관리자 페이지·위험 메서드·오류 노출·CORS)', dv.grade.includes('심화 점검') && ['server-status', '관리자·로그인 페이지', 'HTTP 메서드', '서버 내부 정보가 보여요', 'CORS'].some(k => dv.findings.includes(k)) && dv.findings.includes('server-status') && dv.findings.includes('CORS'));
+  chk('심화 점검 결과: 능동 점검으로 찾은 것 (server-status·관리자 페이지·위험 메서드·오류 노출·CORS)', dv.grade.includes('심화 점검') && dv.findings.includes('server-status') && dv.findings.includes('CORS') && dv.findings.includes('HTTP 메서드'));
+  chk('더 적극적인 점검: 오래된 버전·설치 파일·오픈 리다이렉트·오래된 TLS', dv.findings.includes('오래된 jQuery 1.12.4') && dv.findings.includes('WordPress 설치 페이지') && dv.findings.includes('오픈 리다이렉트') && dv.findings.includes('오래된 암호화 프로토콜') && dv.findings.includes('WordPress 5.2'));
+  chk('버전은 "취약하다" 단정 대신 확인 요청', dv.findings.includes('최신') && !/반드시 취약|해킹당했/.test(dv.findings));
   chk('심화 점검도 소유 인증 안 된 사이트엔 안 함', (await say('B', '긴급 심화 점검')).includes('소유 인증') || (await say('B', '긴급 심화 점검')).includes('등록된 사이트가 없어요'));
   for (let i = 0; i < 2; i++) { await U.A(`/api/rooms/${room.A}/messages`, { text: '긴급 심화 점검 확인', to: 'security' }); await sl(400); }
   chk('심화 점검은 하루 3번까지', (await say('A', '긴급 심화 점검 확인')).includes('내일 다시'));

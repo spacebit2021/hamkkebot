@@ -35,6 +35,16 @@ async function get(url, opt = {}) {
 // 인증서 정보 (테스트에서 바꿔 끼울 수 있게 내보냄)
 const io = {
   get,
+  // 오래된 암호화 프로토콜(TLS 1.0/1.1)을 아직 받아들이는지 — 핸드셰이크만 하고 바로 끊음
+  weakTls: async (host, port = 443) => {
+    const one = ver => new Promise(ok => {
+      let s; try { s = tls.connect({ host, port, servername: host, minVersion: ver, maxVersion: ver, timeout: 6000, rejectUnauthorized: false }, () => { s.end(); ok(true); }); }
+      catch (e) { return ok(false); }
+      s.on('error', () => ok(false)); s.on('timeout', () => { s.destroy(); ok(false); });
+    });
+    const out = []; for (const v of ['TLSv1', 'TLSv1.1']) { try { if (await one(v)) out.push(v); } catch (e) {} }
+    return out;
+  },
   tlsInfo: (host, port = 443) => new Promise(ok => {
     const s = tls.connect({ host, port, servername: host, timeout: 8000, rejectUnauthorized: false }, () => {
       const c = s.getPeerCertificate(); const proto = s.getProtocol(); const authorized = s.authorized; const err = s.authorizationError;
@@ -101,7 +111,7 @@ async function scan(site, verified, opt = {}) {
     for (const [p, test, title, detail, fix] of probe) { const x = await io.get(site + p, { follow: false }); if (!x.error && x.status === 200 && test(x.body)) add('exposed_' + p.replace(/\W/g, ''), 'high', title, detail, fix); }
   }
   // 심화(긴급) 점검: 겉을 더 깊이 보는 능동 점검. 공격 페이로드·로그인 시도·부하는 하지 않음 (GET·OPTIONS만)
-  if (opt.deep && verified) await deepProbe(site, add);
+  if (opt.deep && verified) await deepProbe(site, add, home, https, u);
   return finish(r);
 }
 function finish(r) {
@@ -138,7 +148,24 @@ const DEEP_FILES = [
   ['/backup.sql', b => /INSERT INTO|CREATE TABLE/i.test(b), 'high', 'DB 백업(backup.sql)이 열려요']
 ];
 const PANELS = [['/wp-admin/', /wp-login|wordpress/i], ['/administrator/', /joomla|administrator/i], ['/admin/', /login|password|관리/i], ['/phpmyadmin/', /phpmyadmin/i]];
-async function deepProbe(site, add) {
+// 오래된 것으로 보이는 라이브러리 (단정하지 않고 확인 요청). 알려진 보안 이슈가 있는 경계값만.
+function versionFindings(home, add) {
+  const body = String(home.body || '');
+  const jq = body.match(/jquery[/.-]?(\d+)\.(\d+)\.(\d+)/i);
+  if (jq && (+jq[1] < 3 || (+jq[1] === 3 && +jq[2] < 5))) add('old_jquery', 'mid', `오래된 jQuery ${jq[1]}.${jq[2]}.${jq[3]}을(를) 써요`, 'jQuery 3.5 아래에는 알려진 보안 문제(XSS)가 있어요', 'jQuery를 최신(3.7 이상)으로 올려 주세요.');
+  const bs = body.match(/bootstrap[/.-]?(\d+)\.(\d+)\.(\d+)/i);
+  if (bs) { const [a1, b1, c1] = [+bs[1], +bs[2], +bs[3]]; if ((a1 === 3 && (b1 < 4 || (b1 === 4 && c1 < 1))) || (a1 === 4 && (b1 < 3 || (b1 === 4 && c1 === 0)))) add('old_bootstrap', 'low', `오래된 Bootstrap ${bs[1]}.${bs[2]}.${bs[3]}을(를) 써요`, '', 'Bootstrap을 최신으로 올려 주세요.'); }
+  const gen = body.match(/<meta[^>]+name=["']generator["'][^>]+content=["']([^"']{2,50})["']/i);
+  if (gen && /\d/.test(gen[1])) add('generator', 'low', `쓰는 프로그램·버전이 페이지에 보여요 (${gen[1].replace(/"/g, '')})`, '오래된 버전이면 알려진 약점을 찾는 단서가 돼요', '꼭 필요하지 않으면 generator 표시를 지우고, 버전을 최신으로 유지하세요.');
+}
+const LEFTOVER = [
+  ['/wp-admin/install.php', b => /wordpress|install|설치/i.test(b), 'high', 'WordPress 설치 페이지가 열려 있어요', '지금 바로 접근을 막으세요. 열려 있으면 사이트를 통째로 빼앗길 수 있어요.'],
+  ['/install.php', b => /install|설치|setup|데이터베이스/i.test(b), 'mid', '설치 페이지(install.php)가 남아 있어요', '설치가 끝났으면 지우거나 접근을 막으세요.'],
+  ['/setup.php', b => /setup|install|설치/i.test(b), 'mid', '설치 페이지(setup.php)가 남아 있어요', '설치가 끝났으면 지우세요.'],
+  ['/wp-content/debug.log', b => /PHP|Warning|Error|Stack|Deprecated/i.test(b), 'mid', 'debug.log 파일이 열려요', '디버그 로그 접근을 막고, 운영에서는 로그를 끄세요.'],
+  ['/readme.html', b => /wordpress|version|버전/i.test(b), 'low', 'readme 파일로 프로그램·버전이 보여요', 'readme 파일을 지우세요.']
+];
+async function deepProbe(site, add, home, https, u) {
   for (const [p, test, level, title] of DEEP_FILES) { const x = await io.get(site + p, { follow: false }); if (!x.error && x.status === 200 && test(String(x.body))) add('deep_' + p.replace(/\W/g, ''), level, title, '', '웹 서버에서 이 파일 접근을 막고, 안에 있던 비밀번호·키를 모두 바꿔 주세요.'); }
   // 디렉터리 목록이 열려 있는지
   for (const d of ['/uploads/', '/images/', '/files/', '/backup/']) { const x = await io.get(site + d, { follow: false }); if (!x.error && x.status === 200 && /<title>Index of|Directory listing for/i.test(String(x.body))) add('dirlist_' + d.replace(/\W/g, ''), 'mid', `폴더 목록이 열려 있어요 (${d})`, '안에 있는 파일 이름이 모두 보여요', '웹 서버에서 디렉터리 목록(autoindex)을 꺼 주세요.'); }
@@ -150,6 +177,17 @@ async function deepProbe(site, add) {
   // 오류 페이지에 내부 정보가 새는지 (없는 주소를 요청해 확인)
   const err = await io.get(site + '/hb-check-' + Math.random().toString(36).slice(2, 10), { follow: false });
   if (!err.error && /Traceback \(most recent|Exception|Fatal error|Warning:|SQLSTATE|at java\.|ORA-\d|stack trace|DEBUG = True/i.test(String(err.body).slice(0, 20000))) add('error_leak', 'mid', '오류 페이지에 서버 내부 정보가 보여요', '코드·경로·DB 오류가 공격 단서가 될 수 있어요', '오류 화면을 간단한 안내로 바꾸고, 운영에서는 디버그 모드를 꺼 주세요.');
+  // 쓰는 프로그램·버전 (오래된 것으로 보이면 알림)
+  if (home) versionFindings(home, add);
+  // 남아 있는 설치·디버그 파일
+  for (const [p, test, level, title, fix] of LEFTOVER) { const x = await io.get(site + p, { follow: false }); if (!x.error && x.status === 200 && test(String(x.body))) add('left_' + p.replace(/\W/g, ''), level, title, '', fix); }
+  // 오픈 리다이렉트: 주소를 바꿔 다른 사이트로 넘기는지 (넘어가는지 확인만)
+  for (const pr of ['next', 'url', 'redirect', 'return', 'returnUrl', 'dest', 'continue', 'u']) {
+    const x = await io.get(`${site}/?${pr}=https://hb-redirect-test.example/`, { follow: false, body: false });
+    if (!x.error && x.status >= 300 && x.status < 400 && /^https?:\/\/hb-redirect-test\.example/i.test(x.location || '')) { add('open_redirect', 'mid', `주소를 바꿔 다른 사이트로 넘길 수 있어요 (오픈 리다이렉트, ?${pr}=)`, '가짜 사이트로 유도하는 피싱에 쓰일 수 있어요', '넘기는 주소를 우리 사이트 안으로만 허용하세요.'); break; }
+  }
+  // 오래된 암호화 프로토콜을 아직 받아들이는지
+  if (https) { const weak = await io.weakTls(u.hostname, +u.port || 443); if (weak && weak.length) add('weak_tls', 'mid', `오래된 암호화 프로토콜을 아직 받아들여요 (${weak.join(', ')})`, '', 'TLS 1.2 이상만 허용하도록 서버를 설정하세요.'); }
   // CORS 설정이 위험한지
   const cors = await io.get(site + '/', { headers: { origin: 'https://hb-cors-test.example' }, body: false, follow: false });
   if (!cors.error && cors.headers) { const acao = cors.headers.get('access-control-allow-origin'), cred = /true/i.test(cors.headers.get('access-control-allow-credentials') || ''); if (acao === 'https://hb-cors-test.example' && cred) add('cors', 'high', '아무 사이트나 우리 API를 쓸 수 있게 열려 있어요 (CORS)', '다른 사이트가 로그인된 사용자 정보를 가져갈 수 있어요', '허용할 출처만 지정하고, credentials를 함께 허용하지 마세요.'); else if (acao === '*') add('cors_any', 'low', 'CORS가 모든 출처에 열려 있어요 (*)', '', '공개 API가 아니면 허용 출처를 좁혀 주세요.'); }
