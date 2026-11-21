@@ -23,6 +23,7 @@ const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
 const SESSION_DAYS = 14;
 const BOTS = require('./bots');
+const DOC = require('./doc');
 const botById = id => BOTS.find(b => b.id === id && !b.soon);
 
 // ---------- 저장소 (data.json) ----------
@@ -138,10 +139,87 @@ function record(org, entry) {
   return e;
 }
 
+// ---------- 기업 정보 문서 (버전 관리) ----------
+// org.doc = { seq, current, versions: [{ id, n, at, by:{kind,name,id}, note, status:'approved'|'pending'|'rejected', html, basedOn }] }
+function ensureDoc(org) {
+  if (!org.doc) {
+    org.doc = { seq: 0, current: null, versions: [] };
+    addVersion(org, { html: DOC.defaultDoc(org), by: { kind: 'system', name: '함께봇' }, note: '기업 기본 정보로 처음 만든 문서', status: 'approved' }, true);
+  }
+  return org.doc;
+}
+const docCurrent = org => { const d = ensureDoc(org); return d.versions.find(v => v.id === d.current); };
+const docVersion = (org, id) => ensureDoc(org).versions.find(v => v.id === id);
+function addVersion(org, { html, by, note, status, basedOn }, quiet) {
+  const d = org.doc;
+  const v = { id: newId('v'), n: ++d.seq, at: Date.now(), by, note: str(note, 200), status, html: DOC.sanitizeHtml(html), basedOn: basedOn || d.current || null };
+  d.versions.push(v);
+  if (status === 'approved') d.current = v.id;
+  // 오래된 기록 정리: 승인본 50개, 거절본 20개까지 보관 (현재본·대기 중인 제안은 항상 보관)
+  const keep = (st, n) => { const xs = d.versions.filter(x => x.status === st && x.id !== d.current); for (const x of xs.slice(0, Math.max(0, xs.length - n))) d.versions.splice(d.versions.indexOf(x), 1); };
+  keep('approved', 50); keep('rejected', 20);
+  save(); if (!quiet) emit('doc', { orgId: org.id }, org.id);
+  return v;
+}
+const docMeta = v => ({ id: v.id, n: v.n, at: v.at, by: v.by, note: v.note, status: v.status, basedOn: v.basedOn, size: v.html.length });
+const docFileName = (org, v) => `${(org.name || '기업').replace(/[\\/:*?"<>|\s]+/g, '_')}_정보_v${v.n}.html`;
+const byLabel = by => by.kind === 'expert' ? `${by.name} 전문가` : by.kind === 'org' ? `${by.name} (기업)` : by.name;
+
+// 함께봇이 기업의 모든 채팅방 대화를 읽고 문서 수정안을 만듦 (기업 승인 전까지 반영 안 됨)
+async function generateDocProposal(org, user) {
+  const cur = docCurrent(org);
+  const rooms = S.rooms.filter(r => r.orgId === org.id);
+  const lines = rooms.flatMap(r => r.msgs.filter(m => m.from !== 'sys').map(m => ({ at: m.at, t: `[${r.name}] ${m.from === 'me' ? '기업(웹)' : m.from === 'tg' ? m.name + '(텔레그램)' : m.from === 'hx' ? m.name + '(사람 전문가)' : (BOTS.find(b => b.id === m.from) || {}).name || '봇'}: ${m.text.slice(0, 600)}` })))
+    .sort((a, b) => a.at - b.at).slice(-80).map(x => x.t);
+  if (!lines.length) return { error: '정리할 대화가 아직 없어요.' };
+  let html, note;
+  if (ANTHROPIC_API_KEY) {
+    const system = `당신은 한국 사회적기업의 '기업 정보 문서'를 관리하는 함께봇입니다. 현재 문서와 최근 대화를 읽고 문서 전체를 갱신한 HTML 조각을 만드세요.
+규칙:
+- 대화나 현재 문서에 실제로 나온 사실만 적으세요. 추측·과장·지어낸 수치/인증/수상은 금지. 모르는 것은 <mark>[확인 필요: 무엇]</mark>으로 표시.
+- 현재 문서의 내용은 대화가 반박하지 않는 한 유지하세요. 상충하면 새 내용으로 바꾸고 <mark>(변경: 이전 내용)</mark>을 붙이세요.
+- 구성: <h1>기업명</h1>, <h2>기업 개요</h2>, <h2>소셜미션</h2>, <h2>제품·서비스</h2>, <h2>주요 고객</h2>, <h2>현재 과제·요청사항</h2>, <h2>상담에서 정해진 것</h2>(날짜·전문가 이름 포함), <h2>확인이 필요한 정보</h2>.
+- 쓸 수 있는 태그: h1 h2 h3 p ul ol li b strong em mark table thead tbody tr th td blockquote br. 속성·스타일·스크립트 없이.
+- HTML 조각만 출력하세요. 설명 문장이나 \`\`\` 코드 블록은 붙이지 마세요.`;
+    const userMsg = `[기업 기본 정보]\n${orgText(org)}\n\n[현재 문서 v${cur.n} HTML]\n${cur.html.slice(0, 20000)}\n\n[최근 대화 (오래된 순)]\n${lines.join('\n')}`;
+    const r = await callClaude(system, userMsg, 4000);
+    if (r.error) return { error: r.error };
+    html = r.text.replace(/^\s*\`\`\`(?:html)?\s*/i, '').replace(/\s*\`\`\`\s*$/, '');
+    if (r.cut) return { error: '문서가 길어 정리가 중간에 끊겼어요. 대화를 나눠 정리하거나 직접 편집해 주세요.' };
+    note = `최근 대화 ${lines.length}개를 함께봇이 정리한 수정안`;
+  } else {
+    // AI 키가 없으면: 현재 문서 끝에 최근 대화 기록을 붙인 안
+    html = `${cur.html}<h2>최근 대화 기록 (정리 전)</h2><ul>${lines.slice(-30).map(l => `<li>${DOC.escapeHtml(l)}</li>`).join('')}</ul>`;
+    note = 'AI 키가 없어 최근 대화 30개를 그대로 붙인 안';
+  }
+  if (!DOC.sanitizeHtml(html)) return { error: '정리 결과가 비어 있어요. 다시 시도해 주세요.' };
+  return { version: addVersion(org, { html, by: { kind: 'bot', name: '함께봇', id: user.id }, note, status: 'pending', basedOn: cur.id }) };
+}
+
 // ---------- Claude ----------
 function orgText(o) {
   if (!o || !o.mission && !o.product) return `기업명: ${(o && o.name) || '-'}\n그 밖의 기업 정보는 아직 입력되지 않음. 필요한 정보는 [확인 필요]로 표시하거나 짧게 질문하세요.`;
   return `기업명: ${o.name}\n소셜미션: ${o.mission || '-'}\n주요 제품·서비스: ${o.product || '-'}\n주요 고객: ${o.target || '-'}\n원하는 말투: ${o.tone || '-'}`;
+}
+// Claude 호출 공통. 실패하면 { error } 를 돌려줌
+async function callClaude(system, user, maxTokens = 2500) {
+  if (!ANTHROPIC_API_KEY) return { error: '서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.' };
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] })
+    });
+    const j = await r.json();
+    if (!r.ok) { console.error('Claude API 오류', r.status, j); return { error: r.status === 429 ? '요청이 많아 잠시 쉬어야 해요. 1분 뒤 다시 시도해 주세요.' : '답변을 받지 못했어요. 다시 시도해 주세요.' }; }
+    return { text: (j.content || []).filter(c => c.type === 'text').map(c => c.text).join(''), cut: j.stop_reason === 'max_tokens' };
+  } catch (e) { console.error(e); return { error: '답변을 받지 못했어요. 네트워크를 확인해 주세요.' }; }
+}
+// 봇·전문가 질문에 넣을 기업 정보: 입력한 기본 정보 + 승인된 기업 정보 문서
+function orgContext(org) {
+  const cur = org && docCurrent(org);
+  const docText = cur ? DOC.htmlToText(cur.html).slice(0, 6000) : '';
+  return `${orgText(org)}${docText ? `\n\n[기업 정보 문서 v${cur.n} — 기업이 승인한 내용]\n${docText}` : ''}`;
 }
 async function askClaude(bot, room, text) {
   if (!ANTHROPIC_API_KEY) return '서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.';
@@ -149,19 +227,11 @@ async function askClaude(bot, room, text) {
     const who = m.from === 'me' ? '사용자(웹)' : m.from === 'tg' ? `${m.name}(텔레그램)` : m.from === 'hx' ? `${m.name}(사람 전문가)` : m.from === 'sys' ? null : (BOTS.find(b => b.id === m.from) || {}).name;
     return who ? `${who}: ${m.text.slice(0, 1500)}` : null;
   }).filter(Boolean).join('\n\n');
-  const system = `${bot.role}\n\n[우리 기업]\n${orgText(orgById(room.orgId))}\n\n한국어로 답하세요. 서식은 굵게(**)와 줄바꿈만 쓰세요.`;
+  const system = `${bot.role}\n\n[우리 기업]\n${orgContext(orgById(room.orgId))}\n\n한국어로 답하세요. 서식은 굵게(**)와 줄바꿈만 쓰세요.`;
   const user = `[이 채팅방의 최근 대화]\n${hist || '(없음)'}\n\n[이번 요청]\n${text}`;
-  try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 2500, system, messages: [{ role: 'user', content: user }] })
-    });
-    const j = await r.json();
-    if (!r.ok) { console.error('Claude API 오류', r.status, j); return r.status === 429 ? '요청이 많아 잠시 쉬어야 해요. 1분 뒤 다시 시도해 주세요.' : '답변을 받지 못했어요. 다시 시도해 주세요.'; }
-    const out = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
-    return out + (j.stop_reason === 'max_tokens' ? '\n\n(답변이 길어 중간에 끊겼어요. "이어서"라고 보내 주세요.)' : '');
-  } catch (e) { console.error(e); return '답변을 받지 못했어요. 네트워크를 확인해 주세요.'; }
+  const r = await callClaude(system, user);
+  if (r.error) return r.error;
+  return r.text + (r.cut ? '\n\n(답변이 길어 중간에 끊겼어요. "이어서"라고 보내 주세요.)' : '');
 }
 async function runBot(room, botId, text) {
   const bot = botById(botId);
@@ -189,6 +259,79 @@ async function tg(method, body) {
 async function tgSend(chatId, text) {
   const plain = text.replace(/\*\*(.+?)\*\*/g, '$1');
   for (let i = 0; i < plain.length; i += 4000) await tg('sendMessage', { chat_id: chatId, text: plain.slice(i, i + 4000) });
+}
+
+// 텔레그램으로 파일 보내기 (multipart). 성공하면 message_id
+async function tgSendDoc(chatId, filename, content, caption) {
+  if (!TG_TOKEN) return null;
+  try {
+    const fd = new FormData();
+    fd.append('chat_id', String(chatId));
+    if (caption) fd.append('caption', caption.slice(0, 1000));
+    fd.append('document', new Blob([content], { type: 'text/html' }), filename);
+    const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendDocument`, { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!j.ok) { console.error('Telegram 오류 sendDocument', j.description); return null; }
+    return j.result.message_id;
+  } catch (e) { console.error('Telegram 파일 전송 실패', e.message); return null; }
+}
+// 텔레그램에 올라온 파일 내려받기 (최대 1MB)
+async function tgDownload(fileId) {
+  const j = await tg('getFile', { file_id: fileId });
+  if (!j || !j.ok || !j.result.file_path) return { error: '파일을 받을 수 없어요. 다시 올려 주세요.' };
+  if (j.result.file_size > 1024 * 1024) return { error: '파일이 너무 커요 (1MB까지).' };
+  try {
+    const r = await fetch(`https://api.telegram.org/file/bot${TG_TOKEN}/${j.result.file_path}`);
+    if (!r.ok) return { error: '파일을 받을 수 없어요. 다시 올려 주세요.' };
+    return { text: await r.text() };
+  } catch (e) { return { error: '파일을 받을 수 없어요. 네트워크를 확인해 주세요.' }; }
+}
+
+// ---------- 전문가가 기업 정보 문서 보기·묻기·고쳐 올리기 ----------
+// 상담 중인 기업의 문서만 다룰 수 있음. where: 답장할 대화(1:1 또는 팀방)의 chat id
+function docTargetRoom(ex, msg, arg, teamRoom) {
+  const active = roomsOfExpert(ex);
+  const mapped = msg.reply_to_message && S.dmMap[`${msg.chat.id}:${msg.reply_to_message.message_id}`];
+  const n = parseInt(arg, 10);
+  const room = (mapped && roomById(mapped)) || (teamRoom && active.includes(teamRoom) ? teamRoom : null) || (n > 0 ? active[n - 1] : null) || (active.length === 1 ? active[0] : null);
+  if (!room) return { error: active.length ? `상담이 ${active.length}개예요. /rooms 의 번호를 붙여 주세요 (예: /info 2), 또는 그 기업 메시지에 답장으로 보내 주세요.` : '진행 중인 상담이 없어요. 기업 정보 문서는 상담 중에만 볼 수 있어요.' };
+  if (!active.includes(room)) return { error: '이미 종료된 상담이에요. 기업 정보 문서는 상담 중에만 다룰 수 있어요.' };
+  return { room, org: orgById(room.orgId) };
+}
+async function sendDocToExpert(ex, msg, arg, teamRoom) {
+  const t = docTargetRoom(ex, msg, arg, teamRoom); if (t.error) return tgSend(msg.chat.id, t.error);
+  const cur = docCurrent(t.org);
+  const caption = `${t.org.name} 기업 정보 문서 v${cur.n} (${new Date(cur.at).toLocaleDateString('ko-KR')} · ${byLabel(cur.by)})\n고칠 내용이 있으면 이 파일을 수정해서 이 대화에 다시 올려 주세요. 파일 설명(캡션)에 바꾼 이유를 적으면 기업에 함께 보여요. 기업이 확인하고 승인하면 반영돼요.`;
+  const id = await tgSendDoc(msg.chat.id, docFileName(t.org, cur), DOC.wrapDocument(`${t.org.name} 기업 정보`, cur.html, `v${cur.n}`), caption);
+  if (!id) return tgSend(msg.chat.id, '파일을 보내지 못했어요. 잠시 뒤 다시 시도해 주세요.');
+  S.dmMap[`${msg.chat.id}:${id}`] = t.room.id;
+  (S.docSent = S.docSent || {})[`${msg.chat.id}:${id}`] = cur.id; save();
+}
+async function receiveDocFromExpert(ex, msg, teamRoom) {
+  const d = msg.document;
+  if (!/\.html?$/i.test(d.file_name || '') && d.mime_type !== 'text/html') return tgSend(msg.chat.id, 'HTML 파일(.html)만 올릴 수 있어요. /info 로 받은 파일을 고쳐서 올려 주세요.');
+  const t = docTargetRoom(ex, msg, (msg.caption || '').match(/^\s*(\d+)\b/)?.[1], teamRoom); if (t.error) return tgSend(msg.chat.id, t.error);
+  const f = await tgDownload(d.file_id); if (f.error) return tgSend(msg.chat.id, f.error);
+  const html = DOC.sanitizeHtml(f.text);
+  if (!html) return tgSend(msg.chat.id, '파일에서 문서 내용을 찾지 못했어요. 내용이 <body> 안에 있는지 확인해 주세요.');
+  const cur = docCurrent(t.org);
+  if (html === cur.html) return tgSend(msg.chat.id, '현재 문서와 내용이 같아요. 고친 부분이 없는 것 같아요.');
+  const sentKey = msg.reply_to_message && `${msg.chat.id}:${msg.reply_to_message.message_id}`;
+  const basedOn = (sentKey && S.docSent && S.docSent[sentKey]) || cur.id;
+  const note = str((msg.caption || '').replace(/^\s*\d+\s*/, ''), 200);
+  const v = addVersion(t.org, { html, by: { kind: 'expert', name: ex.name, id: ex.id }, note: note || '전문가 수정안', status: 'pending', basedOn });
+  addMsg(t.room, { from: 'sys', text: `${ex.name} 전문가가 기업 정보 문서 수정안(v${v.n})을 올렸어요. "기업 정보 문서"에서 확인하고 승인하면 반영돼요.${note ? ' 메모: ' + note : ''}` });
+  const stale = basedOn !== cur.id ? ` 참고: v${(docVersion(t.org, basedOn) || {}).n || '?'}를 바탕으로 고친 안인데, 그사이 문서가 v${cur.n}으로 바뀌었어요. 기업이 비교해서 판단해요.` : '';
+  return tgSend(msg.chat.id, `"${roomLabel(t.room)}"에 기업 정보 문서 수정안 v${v.n}을 올렸어요. 기업이 승인하면 알려 드릴게요.${stale}`);
+}
+async function answerAboutOrg(ex, msg, arg, teamRoom) {
+  const q = arg.replace(/^\d+\s*/, '').trim();
+  if (!q) return tgSend(msg.chat.id, '물어볼 내용을 적어 주세요. 예: /ask 이 기업의 주요 고객은?');
+  const t = docTargetRoom(ex, msg, arg, teamRoom); if (t.error) return tgSend(msg.chat.id, t.error);
+  const system = `당신은 함께봇입니다. 사람 전문가가 상담 중인 기업에 대해 묻습니다. 아래 기업 정보와 이 상담방의 최근 대화에 있는 내용만으로 답하세요. 없는 내용은 "기업 정보 문서에 없어요"라고 말하고, 기업에 직접 물어보라고 권하세요. 추측하지 마세요. 짧게, 한국어로, 서식 없이.`;
+  const hist = t.room.msgs.filter(m => m.from !== 'sys').slice(-20).map(m => `${m.from === 'me' ? '기업' : m.name || (BOTS.find(b => b.id === m.from) || {}).name || '봇'}: ${m.text.slice(0, 500)}`).join('\n');
+  const r = await callClaude(system, `[기업 정보]\n${orgContext(t.org)}\n\n[상담방 최근 대화]\n${hist || '(없음)'}\n\n[전문가 질문]\n${q}`, 1200);
+  return tgSend(msg.chat.id, r.error ? `${r.error}\n/info 로 기업 정보 문서를 받아 직접 볼 수 있어요.` : `[${t.org.name} 정보 · 함께봇]\n${r.text}`);
 }
 
 // ---------- 사람 전문가 ----------
@@ -354,7 +497,9 @@ async function handleExpertDM(ex, msg, cmd) {
     ex.available = cmd === 'on'; save(); emit('room', {}, '*');
     return tgSend(msg.chat.id, ex.available ? '이제 기업이 호출할 수 있어요.' : '상담 받기를 잠시 껐어요. 기업 목록에 "지금은 상담 불가"로 보여요. 다시 켜려면 /on');
   }
-  if (cmd === 'rooms') return tgSend(msg.chat.id, active.length ? '진행 중인 상담\n' + active.map(r => `· ${roomLabel(r)}`).join('\n') : '진행 중인 상담이 없어요.');
+  if (cmd === 'rooms') return tgSend(msg.chat.id, active.length ? '진행 중인 상담\n' + active.map((r, i) => `${i + 1}. ${roomLabel(r)}`).join('\n') + '\n\n/info 번호 로 그 기업의 정보 문서를 받을 수 있어요.' : '진행 중인 상담이 없어요.');
+  if (cmd === 'info') return sendDocToExpert(ex, msg, msg.text.split(/\s+/)[1] || '');
+  if (cmd === 'ask') return answerAboutOrg(ex, msg, msg.text.replace(/^\/ask(@\w+)?\s*/i, ''));
   if (!room) return tgSend(msg.chat.id, active.length ? `진행 중인 상담이 ${active.length}개예요. 답할 기업의 메시지를 길게 눌러 "답장"으로 보내 주세요.` : '진행 중인 상담이 없어요. 기업이 호출하면 여기로 메시지가 와요.');
   if (!active.includes(room)) {
     if ((room.pending || []).some(p => p.expertId === ex.id)) return tgSend(msg.chat.id, '아직 수락하지 않은 요청이에요. 요청 메시지의 "수락하고 상담하기" 버튼을 먼저 눌러 주세요.');
@@ -372,6 +517,8 @@ const TEAM_HELP = `전문가 팀방 사용법
 /use 번호 — 그 상담을 이 팀방에 연결 (기업 방의 새 메시지가 여기 보임)
 /send 내용 — 연결된 상담의 기업에게 보내기 (/s 로 줄여 써도 돼요)
    다른 메시지에 "답장"으로 /send 를 보내면 그 메시지 내용을 보내요
+/info — 연결된 기업의 정보 문서(HTML) 받기 · 고친 파일을 여기 올리면 기업이 확인 후 반영
+/ask 질문 — 기업 정보 문서를 바탕으로 함께봇에게 묻기
 /join 하고 싶은 말 — 호출되지 않은 상담에 참여 요청 (기업이 승인하면 참여)
    /join 번호 하고 싶은 말 — /rooms 목록의 다른 상담에 요청
 /end — 내 상담 종료
@@ -414,6 +561,8 @@ async function handleTeam(msg, ex, cmd, arg) {
     return tgSend(chat.id, `"${roomLabel(target)}" 상담을 연결했어요. 이제 기업 방의 새 메시지가 여기 보여요.\n\n최근 대화\n${recent || '(없음)'}\n\n기업에 보내려면 /send 내용`);
   }
   if (cmd === 'detach') { if (!room) return tgSend(chat.id, '연결된 상담이 없어요.'); return detachTeam(room); }
+  if (cmd === 'info') return sendDocToExpert(ex, msg, arg, room);
+  if (cmd === 'ask') return answerAboutOrg(ex, msg, arg, room);
   if (cmd === 'join') {
     // /join [번호] [하고 싶은 말] — 번호가 없으면 이 팀방에 연결된 상담
     const m = arg.match(/^(\d+)\s*([\s\S]*)$/);
@@ -459,7 +608,7 @@ async function handleTeam(msg, ex, cmd, arg) {
   return tgSend(chat.id, `팀방에서 쓸 수 없는 명령이에요.\n\n${TEAM_HELP}`);
 }
 
-const EXPERT_CMDS = '/login 프로필 편집 · /rate 숫자 시간당 토큰 · /on /off 상담 받기 켜기·끄기\n/rooms 진행 중인 상담 · /end 상담 종료 · /balance 받은 토큰';
+const EXPERT_CMDS = '/info 기업 정보 문서 받기 · /ask 질문 기업 정보 묻기 · 고친 HTML 파일을 올리면 기업이 승인 후 반영\n/login 프로필 편집 · /rate 숫자 시간당 토큰 · /on /off 상담 받기 켜기·끄기\n/rooms 진행 중인 상담 · /end 상담 종료 · /balance 받은 토큰';
 const HELP = () => `함께봇 사용법
 /link 연결코드 — 이 대화(그룹 또는 1:1)를 웹앱 채팅방과 연결
 /unlink — 연결 해제
@@ -470,7 +619,16 @@ ${BOTS.filter(b => !b.soon).map(b => `/${b.id} 요청내용 — ${b.name}에게 
 연결코드는 웹앱 채팅방의 "텔레그램" 버튼에서 받을 수 있어요.`;
 
 async function handleTelegram(msg) {
-  if (!msg || !msg.text) return;
+  if (!msg) return;
+  if (msg.document) {
+    // 전문가가 고친 기업 정보 문서(HTML)를 올린 경우: 1:1 대화 또는 전문가 팀방에서만
+    const ex = expertByChat(msg.chat.type === 'private' ? msg.chat.id : msg.from.id);
+    const g = msg.chat.type !== 'private' && S.expertGroups[msg.chat.id];
+    if (ex && (msg.chat.type === 'private' || (g && g.members.includes(ex.id)))) return receiveDocFromExpert(ex, msg, g && g.roomId ? roomById(g.roomId) : null);
+    if (msg.chat.type === 'private') return tgSend(msg.chat.id, '파일은 등록된 전문가만 올릴 수 있어요.');
+    return;
+  }
+  if (!msg.text) return;
   const chat = msg.chat, isPrivate = chat.type === 'private';
   const name = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || msg.from.username || '텔레그램 사용자';
   const text = msg.text.trim();
@@ -493,7 +651,7 @@ async function handleTelegram(msg) {
   // 기업 방과 연결되지 않은 그룹에서 전문가가 쓰면 '전문가 팀방'으로 동작
   if (!isPrivate && !roomByChat(chat.id)) {
     const sender = expertByChat(msg.from.id); // 텔레그램 1:1 chat id = 사용자 id
-    const teamCmds = ['team', 'rooms', 'use', 'send', 's', 'end', 'detach', 'join'];
+    const teamCmds = ['team', 'rooms', 'use', 'send', 's', 'end', 'detach', 'join', 'info', 'ask'];
     if (S.expertGroups[chat.id] && cmd !== 'link') return handleTeam(msg, sender, cmd, arg);
     if (sender && teamCmds.includes(cmd)) return handleTeam(msg, sender, cmd, arg);
   }
@@ -553,7 +711,7 @@ async function pollTelegram() {
     { command: 'help', description: '사용법' }, { command: 'bots', description: '전문가 봇 목록' },
     { command: 'link', description: '웹앱 채팅방과 연결' }, { command: 'unlink', description: '연결 해제' },
     ...BOTS.filter(b => !b.soon).map(b => ({ command: b.id, description: b.name })),
-    { command: 'team', description: '(전문가) 이 그룹을 전문가 팀방으로' }, { command: 'send', description: '(전문가 팀방) 기업에게 보내기' }, { command: 'use', description: '(전문가 팀방) 상담 연결' }, { command: 'join', description: '(전문가 팀방) 상담 참여 요청' },
+    { command: 'team', description: '(전문가) 이 그룹을 전문가 팀방으로' }, { command: 'send', description: '(전문가 팀방) 기업에게 보내기' }, { command: 'use', description: '(전문가 팀방) 상담 연결' }, { command: 'join', description: '(전문가 팀방) 상담 참여 요청' }, { command: 'info', description: '(전문가) 기업 정보 문서 받기' }, { command: 'ask', description: '(전문가) 기업 정보 묻기' },
     { command: 'login', description: '(전문가) 프로필 페이지 로그인 코드' }, { command: 'rate', description: '(전문가) 시간당 토큰 정하기' }
   ] });
   console.log(`텔레그램: @${tgUsername} 으로 중계 시작`);
@@ -738,6 +896,74 @@ async function userApi(req, res, p, sess) {
       rooms: S.rooms.filter(r => r.orgId === org.id), bots: publicBots(), experts: publicExperts(),
       telegram: { enabled: !!tgUsername, username: tgUsername }, ai: !!ANTHROPIC_API_KEY
     });
+  // ----- 기업 정보 문서 -----
+  if (p.startsWith('/api/doc')) {
+    const d = ensureDoc(org), url = new URL(req.url, 'http://x');
+    if (req.method === 'GET') {
+      if (p === '/api/doc') {
+        const cur = docCurrent(org);
+        return json(res, 200, {
+          current: { ...docMeta(cur), html: cur.html },
+          pending: d.versions.filter(v => v.status === 'pending').map(v => ({ ...docMeta(v), html: v.html, base: (docVersion(org, v.basedOn) || {}).n })),
+          history: d.versions.filter(v => v.status !== 'pending').slice().reverse().map(docMeta)
+        });
+      }
+      const v = docVersion(org, url.searchParams.get('id') || d.current);
+      if (!v) return BAD(res, '없는 버전이에요', 404);
+      if (p === '/api/doc/version') return json(res, 200, { ...docMeta(v), html: v.html });
+      if (p === '/api/doc/download') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(docFileName(org, v))}` });
+        return res.end(DOC.wrapDocument(`${org.name} 기업 정보`, v.html, `v${v.n}`));
+      }
+      return BAD(res, '없는 기능이에요', 404);
+    }
+    if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
+    const b = await body(req);
+    const me = { kind: 'org', name: user.name, id: user.id };
+    if (p === '/api/doc/save') {
+      // 기업이 웹에서 고쳐 저장 → 바로 새 버전. 그사이 다른 버전이 승인됐으면 덮어쓰기 전에 알려 줌
+      if (b.basedOn && b.basedOn !== d.current && !b.force) return BAD(res, `편집하는 동안 문서가 v${docCurrent(org).n}으로 바뀌었어요. 최신본을 확인한 뒤 다시 저장하거나, 그대로 덮어쓰려면 "그래도 저장"을 눌러 주세요.`, 409);
+      const html = DOC.sanitizeHtml(b.html);
+      if (!html) return BAD(res, '빈 문서는 저장할 수 없어요');
+      if (html === docCurrent(org).html) return BAD(res, '바뀐 내용이 없어요');
+      const v = addVersion(org, { html, by: me, note: b.note || '웹에서 직접 편집', status: 'approved', basedOn: b.basedOn });
+      return json(res, 200, { ok: true, id: v.id, n: v.n, cleaned: html !== String(b.html || '').trim() });
+    }
+    if (p === '/api/doc/revert') {
+      const old = docVersion(org, b.id);
+      if (!old || old.status !== 'approved') return BAD(res, '되돌릴 수 있는 버전이 아니에요', 404);
+      if (old.id === d.current) return BAD(res, '이미 현재 버전이에요');
+      const v = addVersion(org, { html: old.html, by: me, note: `v${old.n}(으)로 되돌림`, status: 'approved', basedOn: d.current });
+      return json(res, 200, { ok: true, n: v.n });
+    }
+    if (p === '/api/doc/generate') {
+      if (d.versions.some(v => v.status === 'pending' && v.by.kind === 'bot')) return BAD(res, '함께봇 정리안이 이미 기다리고 있어요. 먼저 승인하거나 거절해 주세요.');
+      const r = await generateDocProposal(org, user);
+      return r.error ? BAD(res, r.error) : json(res, 200, { ok: true, id: r.version.id, n: r.version.n });
+    }
+    if (p === '/api/doc/approve' || p === '/api/doc/reject') {
+      const v = docVersion(org, b.id);
+      if (!v || v.status !== 'pending') return BAD(res, '이미 처리됐거나 없는 수정안이에요', 404);
+      const ex = v.by.kind === 'expert' && expertById(v.by.id);
+      const notify = t => { if (ex && ex.tgChatId) tgSend(ex.tgChatId, t); };
+      if (p === '/api/doc/reject') {
+        v.status = 'rejected'; v.decidedBy = me; v.reason = str(b.reason, 200); save(); emit('doc', { orgId: org.id }, org.id);
+        notify(`${org.name}이(가) 기업 정보 문서 수정안 v${v.n}을 반영하지 않기로 했어요.${v.reason ? ' 사유: ' + v.reason : ''}`);
+        return json(res, 200, { ok: true });
+      }
+      // 기업이 수정안을 조금 고쳐서 승인할 수도 있음
+      const edited = b.html != null ? DOC.sanitizeHtml(b.html) : null;
+      if (edited === '') return BAD(res, '빈 문서는 승인할 수 없어요');
+      const changed = !!edited && edited !== v.html;
+      v.status = 'approved'; v.decidedBy = me;
+      if (changed) { v.html = edited; v.note = `${v.note} (기업이 고쳐서 승인)`; }
+      d.current = v.id; save(); emit('doc', { orgId: org.id }, org.id);
+      notify(`${org.name}이(가) 기업 정보 문서 수정안 v${v.n}을 승인했어요. 이제 이 내용이 기업 정보로 쓰여요.${changed ? ' (기업이 일부 고쳐서 반영)' : ''}`);
+      return json(res, 200, { ok: true, n: v.n });
+    }
+    return BAD(res, '없는 기능이에요', 404);
+  }
+
   if (req.method !== 'POST') return BAD(res, '없는 기능이에요', 404);
   const b = await body(req);
 

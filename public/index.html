@@ -84,6 +84,28 @@ button{cursor:pointer}
 .xtools{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}.xtools input{flex:1 1 180px}.xtools select{flex:0 1 160px}
 .paycalc{font-size:14px;color:var(--mute)}.paycalc b{color:var(--ink)}
 .jrate{white-space:nowrap;font-size:12px;color:var(--mute)}.jrate b{font:800 20px "Gothic A1";color:#06a77d}
+.docbtn{margin:0 14px 10px;width:calc(100% - 28px);min-height:44px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);display:flex;justify-content:space-between;align-items:center;padding:0 12px;font-weight:500}
+.badge{background:#e8543a;color:#fff;border-radius:10px;font-size:12px;padding:1px 8px;font-weight:700}
+.docsheet{width:min(1000px,100%);max-height:94dvh;display:flex;flex-direction:column;gap:12px}
+.dochead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.doctabs{display:flex;gap:6px;flex-wrap:wrap}.doctabs button{min-height:40px;border-radius:20px;border:1.5px solid var(--line);background:none;padding:0 14px;font-size:14px}
+.doctabs button[aria-pressed=true]{border-color:var(--pri);color:var(--pri);font-weight:700}
+.doctabs a{display:inline-flex;align-items:center;min-height:40px;border-radius:20px;border:1.5px solid var(--line);padding:0 14px;font-size:14px;color:inherit;text-decoration:none}
+.docview{border:1.5px solid var(--line);border-radius:16px;padding:18px 22px;background:var(--card);overflow-wrap:anywhere;min-height:200px}
+.docview h1{font-size:26px;margin:0 0 6px}.docview h2{font-size:19px;margin:22px 0 8px;padding-top:10px;border-top:1px solid var(--line)}.docview h3{font-size:16px}
+.docview p,.docview li{font-size:15px}.docview table{border-collapse:collapse;width:100%;font-size:14px}.docview th,.docview td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+.docview blockquote{margin:0;padding:8px 12px;border-left:3px solid var(--pri);background:var(--side)}.docview mark{background:#fff1b8;color:#16171d}
+.docview[contenteditable=true]{outline:2px dashed var(--pri);outline-offset:2px}
+.doctool{display:flex;gap:6px;flex-wrap:wrap}.doctool button{min-height:38px;min-width:38px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);padding:0 10px;font-size:14px}
+.docsrc{width:100%;min-height:320px;font:13px/1.5 ui-monospace,monospace;border-radius:12px;border:1.5px solid var(--line);background:var(--card);padding:12px}
+.propcard{border:1.5px solid #e8543a;border-radius:14px;padding:12px 14px;display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;background:var(--card)}
+.propcard b{font-size:15px}
+.cmp{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.cmp h4{margin:0 0 6px;font-size:14px;color:var(--mute)}
+.chg{border-radius:12px;background:var(--side);padding:10px 14px;font-size:14px}.chg li{margin:3px 0}.chg .add{color:#06784f}.chg .del{color:#c0392b;text-decoration:line-through}
+.hist{list-style:none;margin:0;padding:0}.hist li{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.hist .st{font-size:12px;padding:2px 8px;border-radius:8px;background:var(--side)}
+.docerr{font-size:14px;color:#d1453b;min-height:20px}.docok{font-size:14px;color:#06784f;min-height:20px}
+@media(max-width:760px){.cmp{grid-template-columns:minmax(0,1fr)}.docview{padding:14px}}
 .typing{color:var(--mute);font-size:14px;padding:0 4px}
 .tools{display:flex;gap:6px;margin-top:6px}
 .tools button{border:0;background:none;color:var(--mute);font-size:13px;min-height:32px;padding:0 6px}
@@ -141,6 +163,7 @@ textarea.field{min-height:80px;resize:vertical}
    <div><h1>함께봇</h1><small>우리 팀에 전문가를 초대하세요</small></div>
   </div>
   <button class="org" id="orgBtn"><b id="orgName">기업 정보 입력하기</b><span id="orgMission">봇이 우리 기업을 알고 답하도록</span></button>
+  <button class="docbtn" id="docBtn" type="button"><span>기업 정보 문서</span><span class="badge" id="docBadge" hidden></span></button>
   <div class="wallet" id="wallet"><span>상담 토큰</span><b id="walletN">0</b></div>
   <nav class="rooms" id="rooms" aria-label="채팅방"></nav>
   <button class="newroom" id="newRoom">+ 새 채팅방</button>
@@ -179,6 +202,18 @@ textarea.field{min-height:80px;resize:vertical}
   <h3 id="tgTitle">텔레그램 그룹 연결</h3>
   <div id="tgBody"></div>
   <div class="row"><button class="btn ghost" data-close>닫기</button></div>
+ </div>
+</div>
+
+<div class="veil docveil" id="docVeil" role="dialog" aria-modal="true" aria-labelledby="docTitle">
+ <div class="sheet docsheet">
+  <div class="dochead">
+   <div><h3 id="docTitle">기업 정보 문서</h3><div class="note" style="padding:0" id="docMeta"></div></div>
+   <button class="btn ghost" type="button" id="docClose">닫기</button>
+  </div>
+  <div class="doctabs" id="docTabs"></div>
+  <div id="docPending"></div>
+  <div id="docMain"></div>
  </div>
 </div>
 
@@ -375,9 +410,67 @@ es=new EventSource('/api/events');
 es.onerror=()=>{if(es&&es.readyState===2){es=null;load().catch(()=>{})}};
 es.addEventListener('room',e=>{const d=JSON.parse(e.data);if(d.roomId)delete typing[d.roomId];clearTimeout(t);t=setTimeout(async()=>{const wasTg=room()&&room().tgChatId;await load();if($('tgVeil').classList.contains('open')&&!wasTg&&room().tgChatId)renderTg()},120)});
 es.addEventListener('typing',e=>{const d=JSON.parse(e.data);typing[d.roomId]=d.botId;if(room()&&room().id===d.roomId)renderLog()});
+es.addEventListener('doc',async()=>{await loadDoc();if($('docVeil').classList.contains('open')&&docMode!=='edit')renderDoc()});
 }
 
-load().catch(()=>{});
+/* ===== 기업 정보 문서 ===== */
+let DOCS=null, docMode='view', docSel=null, docDirty=false;
+const whenD=t=>new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+const byL=b=>b?(b.kind==='expert'?b.name+' 전문가':b.kind==='org'?b.name+' (기업)':b.name):'';
+async function loadDoc(){try{DOCS=await api('/api/doc');const n=DOCS.pending.length;$('docBadge').hidden=!n;$('docBadge').textContent=n?n+'건 확인 필요':'';}catch(e){}}
+function blocks(html){const d=document.createElement('div');d.innerHTML=html;return [...d.querySelectorAll('h1,h2,h3,h4,p,li,td,th,blockquote,pre,dt,dd')].map(e=>e.textContent.trim()).filter(Boolean)}
+function changes(a,b){const A=blocks(a),B=blocks(b),sa=new Set(A),sb=new Set(B);const add=B.filter(x=>!sa.has(x)),del=A.filter(x=>!sb.has(x));
+ if(!add.length&&!del.length)return '<div class="chg">글 내용은 같고 모양(제목·목록 등)만 바뀌었어요.</div>';
+ return `<div class="chg"><b>바뀐 내용</b><ul>${del.slice(0,30).map(x=>`<li class="del">− ${esc(x.slice(0,200))}</li>`).join('')}${add.slice(0,30).map(x=>`<li class="add">+ ${esc(x.slice(0,200))}</li>`).join('')}</ul>${add.length+del.length>60?'<div class="note" style="padding:0">바뀐 곳이 많아 일부만 보여요.</div>':''}</div>`}
+function renderDoc(){
+ if(!DOCS)return;const c=DOCS.current;
+ $('docMeta').textContent=`현재 v${c.n} · ${whenD(c.at)} · ${byL(c.by)}${c.note?' · '+c.note:''}`;
+ const tab=(m,l)=>`<button type="button" data-dmode="${m}" aria-pressed="${docMode===m}">${l}</button>`;
+ $('docTabs').innerHTML=tab('view','보기')+tab('edit','편집')+tab('history','버전 기록')+`<button type="button" id="docGen">함께봇으로 대화 정리</button><a href="/api/doc/download?id=${c.id}">HTML 내려받기</a>`;
+ $('docPending').innerHTML=DOCS.pending.map(p=>`<div class="propcard"><div><b>수정안 v${p.n} · ${esc(byL(p.by))}</b><div class="note" style="padding:0">${whenD(p.at)}${p.note?' · '+esc(p.note):''}${p.base&&p.basedOn!==c.id?` · v${p.base}를 바탕으로 고친 안 (지금은 v${c.n})`:''}</div></div><button class="btn" type="button" data-cmp="${p.id}">비교하고 결정하기</button></div>`).join('');
+ const m=$('docMain');
+ if(docMode==='view')m.innerHTML=`<div class="docview">${c.html}</div><p class="note" style="padding:0">이 문서는 함께봇의 AI 전문가와 상담 중인 사람 전문가가 우리 기업을 이해하는 데 쓰여요. 사람 전문가는 상담 중에만 볼 수 있어요.</p>`;
+ else if(docMode==='edit'){const src=docSel&&docSel.edit?docSel.html:c.html;
+  m.innerHTML=`<div class="doctool" id="docTool"><button type="button" data-cmd="formatBlock" data-v="H2">큰 제목</button><button type="button" data-cmd="formatBlock" data-v="H3">작은 제목</button><button type="button" data-cmd="formatBlock" data-v="P">본문</button><button type="button" data-cmd="bold"><b>굵게</b></button><button type="button" data-cmd="insertUnorderedList">• 목록</button><button type="button" data-cmd="insertOrderedList">1. 목록</button><button type="button" data-cmd="undo">되돌리기</button><button type="button" id="docSrcBtn">HTML 보기</button></div>
+  <div class="docview" id="docEd" contenteditable="true">${src}</div><textarea class="docsrc" id="docSrc" hidden aria-label="HTML 원본"></textarea>
+  <input class="field" id="docNote" maxlength="200" placeholder="무엇을 바꿨는지 짧게 (선택)">
+  <div class="docerr" id="docErr"></div><div class="acts"><button class="btn" type="button" id="docSave">${docSel&&docSel.edit?`수정안 v${docSel.n}을 고쳐서 승인`:'새 버전으로 저장'}</button><button class="btn ghost" type="button" data-dmode="view">취소</button></div>
+  <p class="note" style="padding:0">저장하면 새 버전이 되고, 이전 버전은 "버전 기록"에서 언제든 되돌릴 수 있어요. 스크립트·색상 같은 서식은 안전을 위해 저장할 때 빠져요.</p>`;
+  docDirty=false;$('docEd').addEventListener('input',()=>docDirty=true);}
+ else if(docMode==='compare'){const p=DOCS.pending.find(x=>x.id===docSel);if(!p){docMode='view';return renderDoc()}
+  m.innerHTML=`${p.basedOn!==c.id?`<div class="payerr">이 수정안은 v${p.base||'?'}를 바탕으로 만들어졌고, 그 뒤 문서가 v${c.n}으로 바뀌었어요. 승인하면 v${c.n}의 내용 대신 이 수정안이 현재 문서가 돼요.</div>`:''}${changes(c.html,p.html)}
+  <div class="cmp"><div><h4>현재 v${c.n}</h4><div class="docview">${c.html}</div></div><div><h4>수정안 v${p.n} · ${esc(byL(p.by))}</h4><div class="docview">${p.html}</div></div></div>
+  <input class="field" id="docReason" maxlength="200" placeholder="거절 사유 (선택, 전문가에게 전달돼요)">
+  <div class="docerr" id="docErr"></div><div class="acts"><button class="btn" type="button" data-approve="${p.id}">승인해서 반영</button><button class="btn ghost" type="button" data-editprop="${p.id}">고쳐서 승인</button><button class="btn ghost" type="button" data-reject="${p.id}">거절</button></div>`;}
+ else if(docMode==='history'){
+  m.innerHTML=`<ul class="hist">${DOCS.history.map(v=>`<li><div><b>v${v.n}</b> ${v.id===c.id?'<span class="st">현재</span>':v.status==='rejected'?'<span class="st">거절됨</span>':''} · ${whenD(v.at)} · ${esc(byL(v.by))}<div class="note" style="padding:0">${esc(v.note||'')}</div></div><div class="acts"><button class="btn ghost" type="button" data-see="${v.id}">보기</button>${v.status==='approved'&&v.id!==c.id?`<button class="btn ghost" type="button" data-revert="${v.id}">이 버전으로 되돌리기</button>`:''}<a class="btn ghost" style="display:inline-flex;align-items:center;text-decoration:none" href="/api/doc/download?id=${v.id}">내려받기</a></div></li>`).join('')}</ul><div class="docerr" id="docErr"></div><div id="docSee"></div>`;}
+}
+const docErr=(t,ok)=>{const e=$('docErr');if(e){e.className=ok?'docok':'docerr';e.textContent=t}};
+async function openDoc(){await loadDoc();docMode='view';docSel=null;renderDoc();open('docVeil')}
+$('docBtn').onclick=openDoc;
+$('docClose').onclick=()=>{if(docMode==='edit'&&docDirty&&$('docClose').textContent!=='저장 안 하고 닫기'){$('docClose').textContent='저장 안 하고 닫기';return}$('docClose').textContent='닫기';$('docVeil').classList.remove('open')};
+$('docVeil').addEventListener('click',async e=>{
+ const t=e.target.closest('button');if(!t)return;const d=t.dataset;
+ if(d.dmode){if(docMode==='edit'&&docDirty&&d.dmode!=='edit'&&t.textContent!=='저장 안 하고 나가기'){t.textContent='저장 안 하고 나가기';return}docMode=d.dmode;docSel=null;return renderDoc()}
+ if(d.cmd){e.preventDefault();$('docEd').focus();document.execCommand(d.cmd,false,d.v||null);docDirty=true;return}
+ if(t.id==='docSrcBtn'){const ed=$('docEd'),src=$('docSrc');if(src.hidden){src.value=ed.innerHTML;src.hidden=false;ed.hidden=true;t.textContent='편집 화면 보기';src.oninput=()=>docDirty=true}else{ed.innerHTML=src.value;src.hidden=true;ed.hidden=false;t.textContent='HTML 보기'}return}
+ if(t.id==='docSave'){const src=$('docSrc'),html=src.hidden?$('docEd').innerHTML:src.value;t.disabled=true;
+  let j;if(docSel&&docSel.edit)j=await api('/api/doc/approve',{id:docSel.id,html});
+  else j=await api('/api/doc/save',{html,note:$('docNote').value,basedOn:DOCS.current.id,force:t.dataset.force==='1'});
+  t.disabled=false;if(j.error){docErr(j.error);if(/바뀌었어요/.test(j.error)){t.dataset.force='1';t.textContent='그래도 저장'}return}
+  docDirty=false;await loadDoc();docMode='view';docSel=null;renderDoc();return}
+ if(t.id==='docGen'){t.disabled=true;t.textContent='정리하는 중… (최대 1분)';const j=await api('/api/doc/generate',{});await loadDoc();
+  if(j.error){docMode='view';renderDoc();$('docMain').insertAdjacentHTML('afterbegin',`<div class="docerr">${esc(j.error)}</div>`);return}
+  docMode='compare';docSel=j.id;return renderDoc()}
+ if(d.cmp){docMode='compare';docSel=d.cmp;return renderDoc()}
+ if(d.approve){t.disabled=true;const j=await api('/api/doc/approve',{id:d.approve});if(j.error){t.disabled=false;return docErr(j.error)}await loadDoc();docMode='view';docSel=null;return renderDoc()}
+ if(d.reject){if(t.textContent!=='정말 거절할까요?'){t.textContent='정말 거절할까요?';return}const j=await api('/api/doc/reject',{id:d.reject,reason:$('docReason').value});if(j.error)return docErr(j.error);await loadDoc();docMode='view';docSel=null;return renderDoc()}
+ if(d.editprop){const p=DOCS.pending.find(x=>x.id===d.editprop);docMode='edit';docSel={edit:true,id:p.id,n:p.n,html:p.html};return renderDoc()}
+ if(d.see){const v=await api('/api/doc/version?id='+d.see);$('docSee').innerHTML=`<h4 style="margin:14px 0 6px">v${v.n} 내용</h4>${v.id!==DOCS.current.id?changes(DOCS.current.html,v.html).replace('바뀐 내용','현재 문서와 다른 점'):''}<div class="docview">${v.html}</div>`;$('docSee').scrollIntoView({behavior:'smooth'});return}
+ if(d.revert){if(t.textContent!=='정말 되돌릴까요?'){t.textContent='정말 되돌릴까요?';return}const j=await api('/api/doc/revert',{id:d.revert});if(j.error)return docErr(j.error);await loadDoc();docMode='history';renderDoc();docErr(`v${j.n}으로 저장했어요 (되돌린 내용). 이전 버전들은 그대로 남아 있어요.`,true);return}
+});
+
+load().then(loadDoc).catch(()=>{});
 }
 </script>
 </body>
