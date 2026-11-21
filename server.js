@@ -318,11 +318,48 @@ function linkOrigin(c, root, why) {
 // 폐기: 목록·채팅방·공개에서 빼고 다시 쓰거나 고칠 수 없게 (기록은 남김)
 function discardBot(c, reason, origin) {
   c.discarded = { at: Date.now(), reason, originBotId: origin ? origin.id : null };
+  refundPasses(c, '운영 기관이 폐기');
   c.publicStatus = null; c.pending = null;
   for (const r of S.rooms) if (r.bots.includes(c.id)) { r.bots = r.bots.filter(x => x !== c.id); if (r.orgId !== c.orgId) addMsg(r, { from: 'sys', text: `"${c.def ? c.def.name : '봇'}"이(가) 운영 기관 결정으로 폐기돼 이 방에서 빠졌어요.` }); }
   const room = S.rooms.find(r => r.orgId === c.orgId);
   if (room) addMsg(room, { from: 'sys', text: `운영 기관이 "${c.def ? c.def.name : '봇'}"을(를) 폐기했어요${origin ? ` (${(orgById(origin.orgId) || {}).name}의 봇을 복사한 것으로 확인)` : ''}: ${reason}. 이 봇은 더 쓸 수 없고 업데이트도 할 수 없어요.` });
   if (origin) { const oroom = S.rooms.find(r => r.orgId === origin.orgId); if (oroom) addMsg(oroom, { from: 'sys', text: `운영 기관이 ${(orgById(c.orgId) || {}).name}의 "${c.def ? c.def.name : '봇'}"을(를) 우리 "${origin.def ? origin.def.name : '봇'}"의 복사로 확인하고 폐기했어요.` }); }
+}
+// 이용권 자동 환불: 봇을 더 쓸 수 없게 되면(폐기·삭제·공개 중단) 남은 기간만큼 날짜 비율로 돌려줌
+// 돌려주는 토큰은 이용권 대금을 받았던 기업 지갑에서 빼고, 모자라면 운영 기관이 채움
+function refundPasses(c, why) {
+  const now = Date.now(), name = c.def ? c.def.name : '봇', done = [];
+  const log = c.passLog || [];
+  for (const buyerId of Object.keys(c.passes || {})) {
+    if (!(c.passes[buyerId] > now)) continue;
+    const buyer = orgById(buyerId); if (!buyer) continue;
+    let parts = log.filter(p => p.orgId === buyerId && p.until > now && !p.refunded);
+    if (!parts.length) { // 기록이 생기기 전에 산 이용권: 지금 가격으로 계산
+      const pr = c.pricing || {}, o = originOf(c);
+      if (pr.passPrice && pr.passDays) parts = [{ orgId: buyerId, paidTo: o && o.orgId !== buyerId ? o.orgId : c.orgId, amount: pr.passPrice, start: c.passes[buyerId] - pr.passDays * 864e5, until: c.passes[buyerId], estimated: true }];
+    }
+    let total = 0, days = 0;
+    for (const p of parts) {
+      const len = p.until - p.start, left = p.until - Math.max(now, p.start);
+      const amt = len > 0 ? Math.round(p.amount * Math.min(1, left / len)) : 0;
+      p.refunded = { at: now, amount: amt };
+      days += Math.ceil(left / 864e5);
+      if (amt <= 0) continue;
+      total += amt;
+      const recv = orgById(p.paidTo), fromRecv = recv ? Math.max(0, Math.min(recv.wallet, amt)) : 0;
+      if (recv && fromRecv) { recv.wallet -= fromRecv; record(recv, { type: 'pass_refund_out', amount: fromRecv, botId: c.id, botName: name, toOrgName: buyer.name, reason: why }); afterSpend(recv); }
+      if (amt - fromRecv > 0) record(buyer, { type: 'pass_refund_platform', amount: amt - fromRecv, botId: c.id, botName: name, fromOrgName: recv ? recv.name : '', reason: why });
+      buyer.wallet += amt;
+      record(buyer, { type: 'pass_refund', amount: amt, botId: c.id, botName: name, fromOrgName: recv ? recv.name : '운영 기관', reason: why, ...(p.estimated ? { estimated: true } : {}) });
+      if (recv && recv.id !== buyer.id) { const rr = S.rooms.find(r => r.orgId === recv.id); if (rr) addMsg(rr, { from: 'sys', text: `"${name}" 이용권 환불로 ${buyer.name}에 ${fromRecv}토큰을 돌려줬어요 (${why})${amt - fromRecv > 0 ? `. 잔액이 모자란 ${amt - fromRecv}토큰은 운영 기관이 채웠어요` : ''}.` }); }
+    }
+    delete c.passes[buyerId];
+    const br = S.rooms.find(r => r.orgId === buyer.id);
+    if (br && total) addMsg(br, { from: 'sys', text: `"${name}" 봇을 더 쓸 수 없게 돼서 (${why}) 이용권 남은 ${days}일분 ${total}토큰을 자동으로 돌려받았어요.` });
+    done.push({ orgId: buyer.id, amount: total });
+  }
+  if (done.length) save();
+  return done;
 }
 // 관리자에게 보여 줄 겹침 비율 (복사 기준에 못 미쳐도 숫자로)
 const rawOverlap = (a, b) => { if (!a || !b) return null; const o = MARKET.overlap(a.def.role, b.def.role, copyIgnore()); return Math.round(Math.max(o.cover, o.within) * 100); };
@@ -1456,7 +1493,7 @@ async function adminApi(req, res, p, sess) {
     const c = S.customBots.find(x => x.id === bm[1]); if (!c) return BAD(res, '없는 봇이에요', 404);
     if (bm[2] === 'approve') { if (c.publicStatus !== 'pending') return BAD(res, '심사 중인 봇이 아니에요'); c.publicStatus = 'public'; c.publicAt = Date.now(); c.publicReason = null; }
     else if (bm[2] === 'reject') { c.publicStatus = 'rejected'; c.publicReason = str(b.reason, 200) || '운영 기관 검토 결과 공개하지 않기로 했어요'; }
-    else c.publicStatus = null;
+    else { c.publicStatus = null; refundPasses(c, '운영 기관이 공개 중단'); }
     save(); emit('room', {}, '*');
     const room = S.rooms.find(r => r.orgId === c.orgId);
     if (room && c.def) addMsg(room, { from: 'sys', text: bm[2] === 'approve' ? `"${c.def.name}" 봇이 운영 기관 승인을 받아 다른 기업에도 공개됐어요.` : bm[2] === 'reject' ? `"${c.def.name}" 봇을 다른 기업에 공개하지 않기로 했어요: ${c.publicReason}` : `"${c.def.name}" 봇의 다른 기업 공개를 운영 기관이 중단했어요.` });
@@ -1677,8 +1714,8 @@ async function userApi(req, res, p, sess) {
     if (p === '/api/bots/publish' || p === '/api/bots/unpublish' || p === '/api/bots/delete') {
       const c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404);
       if (c.discarded) return BAD(res, '운영 기관이 폐기한 봇이에요');
-      if (p === '/api/bots/delete') { S.customBots = S.customBots.filter(x => x !== c); save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
-      if (p === '/api/bots/unpublish') { c.publicStatus = null; save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
+      if (p === '/api/bots/delete') { refundPasses(c, '만든 기업이 삭제'); S.customBots = S.customBots.filter(x => x !== c); save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
+      if (p === '/api/bots/unpublish') { c.publicStatus = null; refundPasses(c, '만든 기업이 공개 중단'); save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
       if (!c.def) return BAD(res, '먼저 기업방에서 승인해 주세요');
       const pr = c.pricing || {};
       if (pr.perUse == null && pr.passPrice == null) return BAD(res, '다른 기업이 쓸 때의 토큰(요청당 또는 기간 이용권)을 먼저 정해 주세요. 무료로 공개하려면 요청당 0으로 정하세요.');
@@ -1691,9 +1728,13 @@ async function userApi(req, res, p, sess) {
       const pr = c.pricing || {}; if (pr.passPrice == null) return BAD(res, '이 봇은 기간 이용권이 없어요');
       if (!reserveTokens(org, pr.passPrice)) return BAD(res, `이용권은 ${pr.passPrice}토큰이에요. 잔액(${org.wallet}토큰)이 부족해요.`);
       c.passes = c.passes || {};
-      c.passes[org.id] = Math.max(Date.now(), c.passes[org.id] || 0) + pr.passDays * 864e5;
-      const o = originOf(c);
-      payShare(org, c, pr.passPrice, 'pass', null, o && orgById(o.orgId) && o.orgId !== org.id ? o : null);
+      const start = Math.max(Date.now(), c.passes[org.id] || 0), until = start + pr.passDays * 864e5;
+      c.passes[org.id] = until;
+      const o = originOf(c), to = o && orgById(o.orgId) && o.orgId !== org.id ? o : null;
+      // 환불할 때 누가 얼마를 받았는지 알 수 있게 구매마다 기록
+      c.passLog = c.passLog || [];
+      c.passLog.push({ orgId: org.id, paidTo: to ? to.orgId : c.orgId, amount: pr.passPrice, start, until, at: Date.now() });
+      payShare(org, c, pr.passPrice, 'pass', null, to);
       emit('room', {}, org.id);
       return json(res, 200, { ok: true, until: c.passes[org.id] });
     }
