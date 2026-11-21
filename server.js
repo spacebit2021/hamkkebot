@@ -1,5 +1,5 @@
 // 함께봇 서버 — 기업별 계정 + Claude 전문가 봇 + 텔레그램 중계 + 사람 전문가 + 상담 토큰
-// 의존성 없음. Node.js 18 이상에서 `node server.js` 로 실행합니다.
+// Node.js 18 이상. 처음 한 번 `npm ci` 후 `node server.js` 로 실행합니다 (PPT용 pptxgenjs·jszip).
 'use strict';
 const http = require('http');
 const fs = require('fs');
@@ -25,6 +25,7 @@ const PUBLIC_URL = process.env.PUBLIC_URL || '';
 const SESSION_DAYS = 14;
 const BOTS = require('./bots');
 const DOC = require('./doc');
+const DECK = require('./deck');
 const botById = id => BOTS.find(b => b.id === id && !b.soon);
 
 // ---------- 저장소 (data.json) ----------
@@ -53,7 +54,8 @@ if (!S.expertLogins) S.expertLogins = {}; // 전문가 웹 로그인용 1회용 
 if (!S.expertGroups) S.expertGroups = {};
 if (!S.botCosts) S.botCosts = {};           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
 // 요청당 토큰: 관리자 설정 > bots.js 기본값. 'summary'는 함께봇 문서 정리
-const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).map(b => ({ id: b.id, name: b.name, def: b.cost || 0 })), { id: 'summary', name: '함께봇 문서 정리', def: 1 }];
+const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).flatMap(b => [{ id: b.id, name: b.name, def: b.cost || 0 }, ...(b.extraCosts || [])]), { id: 'summary', name: '함께봇 문서 정리', def: 1 }];
+const PPT_RE = /ppt|피피티|파워\s*포인트|발표\s*자료|슬라이드|프레젠테이션|소개\s*자료|덱/i;
 const costOf = id => { const v = S.botCosts[id]; if (Number.isInteger(v)) return v; const it = COST_ITEMS().find(x => x.id === id); return it ? it.def : 0; };
 // 토큰 미리 잡기 → 성공하면 기록, 실패하면 돌려줌 (동시에 여러 요청이 와도 잔액을 넘지 않게)
 function reserveTokens(org, n) { if (n <= 0) return true; if (org.wallet < n) return false; org.wallet -= n; save(); return true; }
@@ -246,20 +248,21 @@ async function askClaude(bot, room, text) {
 async function runBot(room, botId, text) {
   const bot = botById(botId);
   if (!bot) return;
-  const org = orgById(room.orgId), cost = costOf(bot.id);
+  const org = orgById(room.orgId), isDeck = !!bot.ppt && PPT_RE.test(text), cost = costOf(isDeck ? `${bot.id}_ppt` : bot.id);
   const say = (t, extra = {}) => { addMsg(room, { from: bot.id, text: t, ...extra }); if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${extra.tgText || t}`); };
   if (!ANTHROPIC_API_KEY) return say('서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.');
   if (!reserveTokens(org, cost)) {
-    addMsg(room, { from: 'sys', text: `${bot.name}은(는) 요청당 ${cost}토큰을 써요. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
+    addMsg(room, { from: 'sys', text: `${bot.name}${isDeck ? ' PPT 만들기' : ''}은(는) 요청당 ${cost}토큰을 써요. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
     if (room.tgChatId) tgSend(room.tgChatId, `${bot.name}: 토큰 잔액이 부족해요 (필요 ${cost}, 잔액 ${org.wallet}).`);
     return;
   }
   emit('typing', { roomId: room.id, botId }, room.orgId);
   if (room.tgChatId) tg('sendChatAction', { chat_id: room.tgChatId, action: 'typing' });
-  const r = bot.kind === 'site' ? await runSiteBot(bot, room, org, text) : await askClaude(bot, room, text);
+  const r = bot.kind === 'site' ? await runSiteBot(bot, room, org, text) : isDeck ? await runDeckBot(bot, room, org, text) : await askClaude(bot, room, text);
   if (r.error) { refundTokens(org, cost); return say(`${r.error}${cost ? ' (토큰은 쓰지 않았어요)' : ''}`); }
-  chargeRecord(org, cost, { botId: bot.id, botName: bot.name, roomId: room.id, roomName: room.name });
-  say(r.text, { cost, ...(r.site ? { site: r.site, tgText: r.tgText } : {}) });
+  chargeRecord(org, cost, { botId: isDeck ? `${bot.id}_ppt` : bot.id, botName: isDeck ? `${bot.name} PPT` : bot.name, roomId: room.id, roomName: room.name });
+  say(r.text, { cost, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}) });
+  if (r.deck && room.tgChatId) { const d = deckById(org, r.deck.id); if (d) tgSendDoc(room.tgChatId, deckFileName(org, d), await DECK.buildDeck(d.outline, org.name), `${d.title} (PPT v${d.n})`, PPTX_MIME); }
 }
 
 // ---------- 홈페이지 봇 · 랜딩페이지 ----------
@@ -297,6 +300,55 @@ async function runSiteBot(bot, room, org, text) {
     tgText: `랜딩페이지 v${v.n}을 만들었어요. 미리보기와 게시는 웹앱 채팅방에서 할 수 있어요.${v.note ? '\n확인할 것: ' + v.note : ''}`
   };
 }
+// ---------- 마케팅 봇 PPT ----------
+// org.decks = [{ id, n, at, title, request, outline, docN }] — 파일은 내려받을 때마다 개요로 새로 만든다
+const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const deckById = (org, id) => (org.decks || []).find(d => d.id === id);
+const deckFileName = (org, d) => {
+  const clean = t => String(t || '').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '');
+  const title = clean(d.title || '발표자료').slice(0, 30), name = clean(org.name || '기업');
+  return `${title.includes(name) ? title : `${name}_${title}`}_v${d.n}.pptx`; // 제목에 기업명이 있으면 한 번만
+};
+const DECK_SPEC = `
+[PPT 만들기]
+이번 요청은 발표자료(PPT)입니다. 아래 형식의 JSON 하나만 출력하세요. JSON 앞뒤에 다른 글이나 코드 블록 표시를 쓰지 마세요.
+{"title": "발표자료 제목", "palette": "terracotta|forest|teal|berry|navy|sunflower 중 하나", "slides": [...], "checks": ["기업이 확인할 것", ...]}
+- palette: 기업 분위기에 맞게. 먹거리·따뜻함 terracotta, 환경·농업 forest, 돌봄·건강·복지 teal, 문화·예술 berry, 공공·기관 대상 navy, 아동·교육 sunflower.
+- 슬라이드 종류(kind)와 칸:
+  title {title, subtitle} — 첫 장
+  bullets {title, bullets: 2~5개, highlight: 이 장의 핵심 한마디}
+  cards {title, items: 2~4개 [{head, text}]} — 제품·서비스, 강점 등 나란히 보여 줄 것
+  steps {title, items: 3~5개 [{head, text}]} — 순서가 있는 과정
+  message {title, message, caption} — 한 문장으로 강조할 메시지
+  closing {title, message, caption} — 마지막 장 (함께하기·문의)
+- 모든 슬라이드에 note(발표자 메모, 2~3문장)를 넣으세요.
+- 글자 수 상한: title 24자, subtitle 45자, bullet 50자, head 12자, text 50자, highlight 18자, message 60자, caption 50자. 넘치면 잘려요.
+- 5~10장. 첫 장은 title, 마지막 장은 closing. 같은 종류를 연달아 세 번 이상 쓰지 마세요.
+- [우리 기업]에 있는 사실만 쓰세요. 수치·후기·수상·인증·연락처를 지어내지 말고, 필요한데 없는 정보는 슬라이드에서 빼고 checks에 적으세요(최대 3개).
+- 이미 만든 PPT 개요가 있고 수정 요청이면 그 개요를 바탕으로 요청한 부분만 바꾸세요.`;
+async function runDeckBot(bot, room, org, text) {
+  org.decks = org.decks || [];
+  const prev = org.decks[org.decks.length - 1];
+  const docV = docCurrent(org);
+  const user = `${prev ? `[직전 PPT 개요 v${prev.n} — 수정 요청이면 이것을 바탕으로]\n${JSON.stringify({ title: prev.outline.title, palette: prev.outline.palette, slides: prev.outline.slides })}\n\n` : ''}[이번 요청]\n${text}`;
+  const r = await callClaude(`${bot.role}\n\n[우리 기업]\n${orgContext(org)}\n${DECK_SPEC}`, user, 6000);
+  if (r.error) return { error: r.error };
+  if (r.cut) return { error: 'PPT 개요가 길어 만들다 끊겼어요. 장 수를 줄여 다시 요청해 주세요.' };
+  const n = DECK.normalizeOutline(r.text);
+  if (n.error) return { error: `PPT를 만들지 못했어요 (${n.error}). 다시 요청해 주세요.` };
+  try { await DECK.buildDeck(n.outline, org.name); } catch (e) { console.error('PPT 생성 오류', e); return { error: 'PPT 파일을 만들지 못했어요. 다시 요청해 주세요.' }; }
+  const d = { id: newId('k'), n: (prev ? prev.n : 0) + 1, at: Date.now(), title: n.outline.title, request: str(text, 200), outline: n.outline, docN: docV.n };
+  org.decks.push(d); if (org.decks.length > 20) org.decks.splice(0, org.decks.length - 20);
+  save();
+  const list = n.outline.slides.map((s, i) => `${i + 1}. ${s.title}`).join('\n');
+  const checks = n.outline.checks.length ? `\n\n**확인할 것**\n${n.outline.checks.map(c => '· ' + c).join('\n')}` : '';
+  return {
+    text: `PPT v${d.n} "${d.title}" ${n.outline.slides.length}장을 만들었어요. (기업 정보 문서 v${docV.n} 기준, 발표자 메모 포함)\n\n${list}${checks}\n\n고칠 점을 말해 주면 이 PPT를 바탕으로 새 버전을 만들어요.`,
+    deck: { id: d.id, n: d.n, title: d.title, count: n.outline.slides.length },
+    tgText: `PPT v${d.n} "${d.title}" ${n.outline.slides.length}장을 만들었어요. 파일을 함께 보내요.${checks.replace(/\*\*/g, '')}`
+  };
+}
+
 // 게시 직후 서버가 공개 주소에 직접 접속해 보는 '등록 확인'
 function selfCheck(slug) {
   return new Promise(resolve => {
@@ -329,13 +381,13 @@ async function tgSend(chatId, text) {
 }
 
 // 텔레그램으로 파일 보내기 (multipart). 성공하면 message_id
-async function tgSendDoc(chatId, filename, content, caption) {
+async function tgSendDoc(chatId, filename, content, caption, mime = 'text/html') {
   if (!TG_TOKEN) return null;
   try {
     const fd = new FormData();
     fd.append('chat_id', String(chatId));
     if (caption) fd.append('caption', caption.slice(0, 1000));
-    fd.append('document', new Blob([content], { type: 'text/html' }), filename);
+    fd.append('document', new Blob([content], { type: mime }), filename);
     const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendDocument`, { method: 'POST', body: fd });
     const j = await r.json();
     if (!j.ok) { console.error('Telegram 오류 sendDocument', j.description); return null; }
@@ -978,6 +1030,15 @@ async function userApi(req, res, p, sess) {
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)]))
     });
+  // ----- 마케팅 봇 PPT 내려받기 -----
+  if (p === '/api/deck/download' && req.method === 'GET') {
+    const d = deckById(org, new URL(req.url, 'http://x').searchParams.get('id'));
+    if (!d) return BAD(res, '없는 PPT예요', 404);
+    const buf = await DECK.buildDeck(d.outline, org.name);
+    res.writeHead(200, { 'content-type': PPTX_MIME, 'content-length': buf.length, 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(deckFileName(org, d))}` });
+    return res.end(buf);
+  }
+
   // ----- 랜딩페이지 -----
   if (p.startsWith('/api/site')) {
     const site = ensureSite(org), url = new URL(req.url, 'http://x');

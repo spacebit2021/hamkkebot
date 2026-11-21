@@ -107,6 +107,7 @@ button{cursor:pointer}
 .docerr{font-size:14px;color:#d1453b;min-height:20px}.docok{font-size:14px;color:#06784f;min-height:20px}
 @media(max-width:760px){.cmp{grid-template-columns:minmax(0,1fr)}.docview{padding:14px}}
 .sitelink{text-decoration:none;color:inherit}
+.docbtn[hidden]{display:none}
 .sitecard{margin-top:8px;border:1.5px solid #0e8f7e;border-radius:14px;padding:12px 14px;background:var(--card);display:flex;flex-direction:column;gap:10px;max-width:520px}
 .sitecard .acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.sitecard a.btn{display:inline-flex;align-items:center;text-decoration:none}
 .slug{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:14px}.slug input{max-width:200px;min-height:40px}
@@ -284,7 +285,7 @@ function renderTop(){
  $('quick').innerHTML=cur&&cur.quick?cur.quick.map(q=>`<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join(''):'';
  $('tgBtn').classList.toggle('on',!!r.tgChatId);$('tgLabel').textContent=r.tgChatId?'연결됨':'텔레그램';
  $('note').textContent=!S.ai?'서버에 ANTHROPIC_API_KEY가 없어 봇이 답하지 못해요.':'봇 답변은 초안입니다. 수치·인증·성과는 반드시 직접 확인 후 사용하세요.';
- {const cb=botById($('to').value);if(S.ai&&cb&&cb.cost)$('note').textContent=`${cb.name}은(는) 요청당 ${cb.cost}토큰을 써요 (잔액 ${S.wallet}토큰). 실패하면 토큰은 빠지지 않아요. 답변은 초안이니 사실은 직접 확인하세요.`}
+ {const cb=botById($('to').value);if(S.ai&&cb&&cb.cost!=null)$('note').textContent=`${cb.name}은(는) 요청당 ${cb.cost}토큰${cb.ppt&&S.costs?` (PPT는 ${S.costs[cb.id+'_ppt']}토큰)`:''}을 써요 (잔액 ${S.wallet}토큰). 실패하면 토큰은 빠지지 않아요. 답변은 초안이니 사실은 직접 확인하세요.`}
 }
 function msgHTML(m,i){
  if(m.from==='sys'&&m.join){const j=m.join,head=`<div class="msg sys">${esc(m.text)}</div>`;
@@ -301,7 +302,7 @@ function msgHTML(m,i){
  if(m.from==='tg')return `<div class="msg">${tgAv(m.name)}<div><div class="who">${esc(m.name)}<span class="src">텔레그램</span></div><div class="bubble">${esc(m.text)}</div></div></div>`;
  if(m.from==='hx'){const x=expById(m.expertId)||{name:m.name,color:'#06a77d'};return `<div class="msg">${xAv(x)}<div><div class="who">${esc(m.name)}<span class="human">사람 전문가</span></div><div class="bubble">${esc(m.text)}</div></div></div>`}
  const b=botById(m.from)||{name:'봇',short:'봇',color:'#888'};
- return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.site?siteCard(m):''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
+ return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.site?siteCard(m):''}${m.deck?`<div class="sitecard deckcard"><div class="acts"><a class="btn" href="/api/deck/download?id=${m.deck.id}">PPT 내려받기 (.pptx)</a><span class="note" style="padding:0">${m.deck.count}장 · 발표자 메모 포함 · PowerPoint·Keynote·Google 슬라이드에서 열려요</span></div></div>`:''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
 }
 function renderLog(){
  const r=room(); if(!r)return;

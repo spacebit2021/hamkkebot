@@ -3,8 +3,17 @@
   "version": "0.1.0",
   "description": "사회적기업용 전문가 봇 채팅 — 웹앱 + 텔레그램 중계",
   "main": "server.js",
-  "scripts": { "start": "node server.js", "test": "node tests/run.js" },
-  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/run.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "license": "UNLICENSED",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "jszip": "^3.10.2",
+    "pptxgenjs": "^4.0.1"
+  }
 }
