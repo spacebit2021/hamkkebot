@@ -108,6 +108,9 @@ td{border-bottom:1px solid var(--line);padding:10px 6px;vertical-align:middle}
  <h2>봇 마켓 심사</h2>
  <p class="lead" style="margin:-6px 0 14px">기업이 직접 만들어 다른 기업에 공개하려는 봇이에요. 역할 지시문은 운영 기관의 Claude API 비용으로 실행되니, 내용과 토큰 가격을 확인하고 승인하세요.</p>
  <div id="market"></div>
+ <h3 style="margin:18px 0 6px">원작 기업의 요구 <span class="tag" id="claimN" hidden></span></h3>
+ <p class="lead" style="margin:0 0 10px">원작 기업이 "우리 봇을 복사했다"고 신고한 건이에요. 두 봇의 역할 지시문·만든 날짜·겹침 비율을 보고 폐기할지, 원작 기업으로 연결할지(쓰일 때마다 원작 기업에 토큰), 기각할지 결정하세요. 결과는 양쪽 기업방에 알려요.</p>
+ <div id="claims"></div>
  <h3 style="margin:18px 0 6px">복사로 찾은 봇</h3>
  <p class="lead" style="margin:0 0 10px">역할 지시문이 다른 기업이 먼저 만든 봇과 많이 겹치면 원작으로 연결해, 쓰일 때마다 원작 기업에 몫이 가요. 잘못 찾았으면 풀고, 못 찾은 복사는 직접 연결하세요.</p>
  <div id="copies"></div>
@@ -149,7 +152,7 @@ async function load(){
  $('sExpert').textContent=n(D.experts.reduce((a,x)=>a+x.balance,0));
  $('sCount').textContent=`${D.orgs.length} · ${D.experts.length} · ${D.orgs.filter(o=>o.unlimited&&o.unlimited.active).length}`;
  $('tgNote').textContent=D.telegram.enabled?`전문가는 텔레그램에서 @${D.telegram.username} 봇에게 등록코드를 보내 등록하고, /login 으로 프로필 페이지(/expert)에 들어가 시간당 토큰을 직접 정합니다. 단가를 정해야 기업 목록에 보입니다.`:'텔레그램 봇 토큰이 설정되지 않아 사람 전문가를 쓸 수 없어요.';
- renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderCopies();
+ renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderClaims();renderCopies();
 }
 const dstr=t=>new Date(t).toLocaleDateString('ko-KR',{month:'numeric',day:'numeric'});
 const tomorrow=()=>{const d=new Date(Date.now()+864e5+9*36e5);return d.toISOString().slice(0,10)};
@@ -181,13 +184,34 @@ function renderOrgs(){
  $('lf').value=D.orgs.some(o=>o.id===cur)?cur:'';
 }
 const MS={pending:'심사 대기',public:'공개 중',rejected:'거절됨'};
+const CS={open:'결정 대기',discarded:'폐기함',linked:'원작으로 연결함',rejected:'기각함'};
+const dt=t=>t?new Date(t+9*36e5).toISOString().slice(0,10):'-';
+function renderClaims(){
+ const L=D.claims||[],open=L.filter(c=>c.status==='open');$('claimN').hidden=!open.length;$('claimN').textContent=`${open.length}건`;
+ const bot=(b,lab)=>b?`<div class="msg"><b>${lab}</b> ${esc(b.name)} · ${esc(b.orgName)} · 만든 날 ${dt(b.createdAt)}${b.publicStatus==='public'?' · 공개 중':''}${b.discarded?' · 폐기됨':''}${b.origin?` · 지금 원작 연결: ${esc(b.origin.orgName)} "${esc(b.origin.name)}"`:''}</div>`:'';
+ $('claims').innerHTML=L.length?L.map(c=>{const opts=(D.allBots||[]).filter(x=>x.orgName!==c.orgName).map(x=>`<option value="${x.id}">${esc(x.name)} · ${esc(x.orgName)}</option>`).join('');
+  if(c.status!=='open')return `<div class="card" style="margin-bottom:8px;opacity:.8"><div class="head"><h3>${esc(c.orgName)} "${esc(c.orig?c.orig.name:'')}" ← ${esc(c.target?`${c.target.orgName} "${c.target.name}"`:c.targetText)}</h3><span class="tag">${CS[c.status]}</span></div><div class="msg">${dt(c.at)} 신고 · ${dt(c.decidedAt)} 결정${c.note?` · ${esc(c.note)}`:''}</div></div>`;
+  return `<div class="card" data-claim="${c.id}" style="margin-bottom:12px;border-color:#f79009"><div class="head"><h3>${esc(c.orgName)}의 신고 <span class="tag">${c.want==='discard'?'폐기 요구':'원작 연결 요구'}</span></h3><span class="msg">${dt(c.at)} · ${esc(c.by||'')}</span></div>
+  ${bot(c.orig,'원작(신고 기업)')}${c.target?bot(c.target,'복사로 신고된 봇'):`<div class="msg"><b>신고 내용</b> ${esc(c.targetText)}</div><div class="inl"><select class="field" data-tsel><option value="">복사한 봇 고르기</option>${opts}</select></div>`}
+  ${c.overlap!=null?`<div class="msg"><b>역할 지시문 겹침</b> ${c.overlap}% ${c.overlap>=60?'(자동 복사 기준 이상)':'(자동 복사 기준 60% 미만 — 의역했을 수 있으니 내용을 직접 비교하세요)'}</div>`:''}
+  <div class="msg"><b>사유</b> ${esc(c.reason)}</div>
+  <details><summary>역할 지시문 나란히 보기</summary><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><pre style="white-space:pre-wrap;font-size:12px">${esc(c.orig?c.orig.role:'')}</pre><pre style="white-space:pre-wrap;font-size:12px" data-trole>${esc(c.target?c.target.role:'(복사한 봇을 고르면 보여요)')}</pre></div></details>
+  <div class="inl"><input class="field" data-cnote maxlength="200" placeholder="결정 메모 (양쪽 기업에 보여요)" style="flex:1 1 220px"></div>
+  <div class="inl"><button class="btn sm" type="button" data-cact="link">원작 기업으로 연결</button><button class="btn sm" type="button" data-cact="discard" style="background:#b42318">폐기</button><button class="btn ghost sm" type="button" data-cact="reject">기각</button></div><div class="msg" data-msg></div></div>`}).join(''):'<p class="empty">받은 요구가 없어요.</p>';
+}
+$('claims').addEventListener('change',e=>{if(!e.target.matches('[data-tsel]'))return;const c=e.target.closest('[data-claim]'),bt=(D.allBots||[]).find(x=>x.id===e.target.value);c.querySelector('[data-trole]').textContent=bt?`${bt.name} · ${bt.orgName} · 만든 날 ${dt(bt.createdAt)}\n\n${bt.role}`:'(복사한 봇을 고르면 보여요)';const d=c.querySelector('details');if(d&&bt)d.open=true});
+$('claims').addEventListener('click',async e=>{const b=e.target.closest('[data-cact]');if(!b)return;const c=b.closest('[data-claim]'),act=b.dataset.cact;
+ if(!confirm2(b,act==='discard'?'정말 폐기':act==='link'?'정말 연결':'정말 기각'))return;
+ const sel=c.querySelector('[data-tsel]');const j=await api(`/api/admin/claims/${c.dataset.claim}`,{action:act,note:c.querySelector('[data-cnote]').value,targetBotId:sel&&sel.value||undefined});
+ if(j&&j.error)return say(c.querySelector('[data-msg]'),j.error,1);load()});
 function renderCopies(){
  const C=D.copies||[],B=D.allBots||[],opt=B.map(b=>`<option value="${b.id}">${esc(b.name)} · ${esc(b.orgName)}</option>`).join('');
- $('copies').innerHTML=(C.length?C.map(c=>`<div class="card" data-cp="${c.id}" style="margin-bottom:10px"><div class="head"><h3>${esc(c.name)} <span class="msg">${esc(c.orgName)}</span></h3><span class="msg">${c.manual?'운영 기관이 연결':c.score+'% 겹침'}</span></div><div class="msg">원작: ${esc(c.origin.name)} · ${esc(c.origin.orgName)} · 요청당 원작 몫 ${c.royalty}토큰</div><div class="inl"><button class="btn ghost sm" type="button" data-cpclear>원작 연결 풀기</button></div><div class="msg" data-msg></div></div>`).join(''):'<p class="empty">찾은 복사가 없어요.</p>')+
+ $('copies').innerHTML=(C.length?C.map(c=>`<div class="card" data-cp="${c.id}" style="margin-bottom:10px"><div class="head"><h3>${esc(c.name)} <span class="msg">${esc(c.orgName)}</span></h3><span class="msg">${c.manual?'운영 기관이 연결':c.score+'% 겹침'}</span></div><div class="msg">원작: ${esc(c.origin.name)} · ${esc(c.origin.orgName)} · 요청당 원작 몫 ${c.royalty}토큰</div><div class="inl"><button class="btn ghost sm" type="button" data-cpclear>원작 연결 풀기</button><button class="btn ghost sm" type="button" data-cpdiscard>폐기</button></div><div class="msg" data-msg></div></div>`).join(''):'<p class="empty">찾은 복사가 없어요.</p>')+
  (B.length>1?`<div class="card" id="cpSet"><div class="msg">직접 연결: 복사한 봇</div><div class="inl"><select class="field" id="cpCopy">${opt}</select></div><div class="msg">원작 봇</div><div class="inl"><select class="field" id="cpFrom">${opt}</select><button class="btn sm" type="button" id="cpLink">원작으로 연결</button></div><div class="msg" data-msg></div></div>`:'');
 }
 $('copies').addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;let j,c;
  if(b.hasAttribute('data-cpclear')){c=b.closest('[data-cp]');if(!confirm2(b,'정말 풀기'))return;j=await api(`/api/admin/bots/${c.dataset.cp}/origin`,{clear:true})}
+ else if(b.hasAttribute('data-cpdiscard')){c=b.closest('[data-cp]');if(!confirm2(b,'정말 폐기'))return;j=await api(`/api/admin/bots/${c.dataset.cp}/discard`,{reason:'원작 봇을 복사한 것으로 확인'})}
  else if(b.id==='cpLink'){c=$('cpSet');j=await api(`/api/admin/bots/${$('cpCopy').value}/origin`,{fromBotId:$('cpFrom').value})}
  else return;
  if(j&&j.error)return say(c.querySelector('[data-msg]'),j.error,1);load()});

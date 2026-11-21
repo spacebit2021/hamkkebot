@@ -39,7 +39,7 @@ function customBotObj(c) {
 }
 const botById = id => BOTS.find(b => b.id === id && !b.soon) || (S.customBots && (c => c ? customBotObj(c) : null)(S.customBots.find(x => x.id === id)));
 // 이 기업이 쓸 수 있는 봇인지: 기본 봇, 우리 기업이 만든(승인된) 봇, 관리자가 공개한 봇
-const canUseBot = (org, id) => { if (BOTS.some(b => b.id === id && !b.soon)) return true; const c = (S.customBots || []).find(x => x.id === id); return !!(c && c.def && (c.orgId === org.id || c.publicStatus === 'public')); };
+const canUseBot = (org, id) => { if (BOTS.some(b => b.id === id && !b.soon)) return true; const c = (S.customBots || []).find(x => x.id === id); return !!(c && c.def && !c.discarded && (c.orgId === org.id || c.publicStatus === 'public')); };
 
 // ---------- 저장소 (data.json) ----------
 // orgs:    기업 [{id,name,mission,product,target,tone,wallet}]
@@ -66,6 +66,7 @@ if (!S.dmMap) S.dmMap = {};
 if (!S.expertLogins) S.expertLogins = {}; // 전문가 웹 로그인용 1회용 코드
 if (!S.expertGroups) S.expertGroups = {};
 if (!S.botCosts) S.botCosts = {};
+if (!S.claims) S.claims = [];   // 원작 기업의 복사 신고 [{id,at,orgId,origBotId,targetBotId,targetText,want,reason,status,note,decidedAt}]
 if (!S.customBots) S.customBots = [];   // 봇 마켓: 기업이 직접 만든 봇           // 관리자가 바꾼 봇별 요청당 토큰 {botId: n}
 // 요청당 토큰: 관리자 설정 > bots.js 기본값. 'summary'는 함께봇 문서 정리
 const COST_ITEMS = () => [...BOTS.filter(b => !b.soon).flatMap(b => [{ id: b.id, name: b.name, def: b.cost || 0 }, ...(b.extraCosts || [])]), { id: 'summary', name: '함께봇 문서 정리', def: 1 }, { id: 'custom', name: '직접 만든 봇 (글 답변)', def: 1 }, { id: 'custom_ppt', name: '직접 만든 봇 PPT', def: 3 }, { id: 'royalty', name: '복사한 봇의 원작 기업 몫 (원작이 요청당 가격을 안 정했을 때, 요청당)', def: 1 }];
@@ -301,11 +302,30 @@ function findOrigin(org, role, self) {
     const roles = [...new Set([...(c.versions || []).map(v => v.def.role), c.def && c.def.role].filter(Boolean))];
     const score = Math.max(0, ...roles.map(r => MARKET.overlap(role, r, copyIgnore()).score));
     if (!score) continue;
-    const oorg = orgById(c.orgId); if (!oorg) continue;
-    return { botId: c.id, orgId: c.orgId, name: c.def ? c.def.name : '', orgName: oorg.name, score };
+    const root = rootOf(c), oorg = orgById(root.orgId); if (!oorg) continue; // 복사본과 겹치면 그 원작으로
+    return { botId: root.id, orgId: root.orgId, name: root.def ? root.def.name : '', orgName: oorg.name, score };
   }
   return null;
 }
+// 원작 연결 (운영 기관 결정)
+function linkOrigin(c, root, why) {
+  c.derivedFrom = { botId: root.id, orgId: root.orgId, name: root.def ? root.def.name : '', score: null, manual: true, at: Date.now() };
+  c.noAutoOrigin = true;
+  const roy = royaltyOf(originOf(c)), room = S.rooms.find(r => r.orgId === c.orgId), oroom = S.rooms.find(r => r.orgId === root.orgId);
+  if (room) addMsg(room, { from: 'sys', text: `운영 기관이 "${c.def ? c.def.name : '봇'}"을(를) ${(orgById(root.orgId) || {}).name}의 봇을 복사한 것으로 확인했어요${why ? ` (${why})` : ''}. 이 봇을 쓸 때마다 요청당 ${roy}토큰이 원작 기업에 가요.` });
+  if (oroom) addMsg(oroom, { from: 'sys', text: `운영 기관이 ${(orgById(c.orgId) || {}).name}의 "${c.def ? c.def.name : '봇'}"을(를) 우리 "${root.def ? root.def.name : '봇'}"의 복사로 연결했어요. 쓰일 때마다 요청당 ${roy}토큰을 받아요.` });
+}
+// 폐기: 목록·채팅방·공개에서 빼고 다시 쓰거나 고칠 수 없게 (기록은 남김)
+function discardBot(c, reason, origin) {
+  c.discarded = { at: Date.now(), reason, originBotId: origin ? origin.id : null };
+  c.publicStatus = null; c.pending = null;
+  for (const r of S.rooms) if (r.bots.includes(c.id)) { r.bots = r.bots.filter(x => x !== c.id); if (r.orgId !== c.orgId) addMsg(r, { from: 'sys', text: `"${c.def ? c.def.name : '봇'}"이(가) 운영 기관 결정으로 폐기돼 이 방에서 빠졌어요.` }); }
+  const room = S.rooms.find(r => r.orgId === c.orgId);
+  if (room) addMsg(room, { from: 'sys', text: `운영 기관이 "${c.def ? c.def.name : '봇'}"을(를) 폐기했어요${origin ? ` (${(orgById(origin.orgId) || {}).name}의 봇을 복사한 것으로 확인)` : ''}: ${reason}. 이 봇은 더 쓸 수 없고 업데이트도 할 수 없어요.` });
+  if (origin) { const oroom = S.rooms.find(r => r.orgId === origin.orgId); if (oroom) addMsg(oroom, { from: 'sys', text: `운영 기관이 ${(orgById(c.orgId) || {}).name}의 "${c.def ? c.def.name : '봇'}"을(를) 우리 "${origin.def ? origin.def.name : '봇'}"의 복사로 확인하고 폐기했어요.` }); }
+}
+// 관리자에게 보여 줄 겹침 비율 (복사 기준에 못 미쳐도 숫자로)
+const rawOverlap = (a, b) => { if (!a || !b) return null; const o = MARKET.overlap(a.def.role, b.def.role, copyIgnore()); return Math.round(Math.max(o.cover, o.within) * 100); };
 function rootOf(c) { let cur = c; for (let i = 0; i < 5 && cur.derivedFrom; i++) { const nx = S.customBots.find(x => x.id === cur.derivedFrom.botId); if (!nx) break; cur = nx; } return cur; }
 const originOf = c => { if (!c.derivedFrom) return null; const rec = S.customBots.find(x => x.id === c.derivedFrom.botId); return { orgId: rec ? rec.orgId : c.derivedFrom.orgId, rec, name: rec && rec.def ? rec.def.name : c.derivedFrom.name }; };
 const royaltyOf = o => { const pr = o.rec && o.rec.pricing; return pr && pr.perUse != null ? pr.perUse : costOf('royalty'); };
@@ -1297,8 +1317,13 @@ async function adminApi(req, res, p, sess) {
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
-    copies: S.customBots.filter(c => c.derivedFrom).map(c => { const o = originOf(c); return { id: c.id, name: c.def ? c.def.name : '', orgName: (orgById(c.orgId) || {}).name, origin: { id: c.derivedFrom.botId, name: o ? o.name : '', orgName: (orgById(o ? o.orgId : c.derivedFrom.orgId) || {}).name }, score: c.derivedFrom.score, manual: !!c.derivedFrom.manual, royalty: o ? royaltyOf(o) : 0 }; }),
-    allBots: S.customBots.filter(c => c.def).map(c => ({ id: c.id, name: c.def.name, orgName: (orgById(c.orgId) || {}).name })),
+    claims: S.claims.slice().sort((x, y) => (x.status === 'open' ? 0 : 1) - (y.status === 'open' ? 0 : 1) || y.at - x.at).slice(0, 50).map(cl => {
+      const o = S.customBots.find(x => x.id === cl.origBotId), t = cl.targetBotId && S.customBots.find(x => x.id === cl.targetBotId);
+      const bv = c => c && { id: c.id, name: c.def ? c.def.name : '', orgName: (orgById(c.orgId) || {}).name, role: c.def ? c.def.role : '', createdAt: c.createdAt, publicStatus: c.publicStatus, discarded: !!c.discarded, origin: c.derivedFrom ? { orgName: (orgById(c.derivedFrom.orgId) || {}).name, name: c.derivedFrom.name } : null };
+      return { ...cl, orgName: (orgById(cl.orgId) || {}).name, orig: bv(o), target: bv(t), overlap: rawOverlap(t, o) };
+    }),
+    copies: S.customBots.filter(c => c.derivedFrom && !c.discarded).map(c => { const o = originOf(c); return { id: c.id, name: c.def ? c.def.name : '', orgName: (orgById(c.orgId) || {}).name, origin: { id: c.derivedFrom.botId, name: o ? o.name : '', orgName: (orgById(o ? o.orgId : c.derivedFrom.orgId) || {}).name }, score: c.derivedFrom.score, manual: !!c.derivedFrom.manual, royalty: o ? royaltyOf(o) : 0 }; }),
+    allBots: S.customBots.filter(c => c.def && !c.discarded).map(c => ({ id: c.id, name: c.def.name, orgName: (orgById(c.orgId) || {}).name, role: c.def.role, createdAt: c.createdAt })),
     market: S.customBots.filter(c => c.publicStatus).map(c => ({ id: c.id, orgName: (orgById(c.orgId) || {}).name, def: c.def, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, publicReqAt: c.publicReqAt, stats: c.stats, sourceUrl: ((c.versions || []).slice(-1)[0] || {}).sourceUrl })),
     ledger: S.ledger.slice(-500).reverse()
   });
@@ -1376,6 +1401,36 @@ async function adminApi(req, res, p, sess) {
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
   }
+  // 원작 기업의 요구 결정: 폐기(discard) · 원작으로 연결(link) · 기각(reject)
+  const cm = p.match(/^\/api\/admin\/claims\/(\w+)$/);
+  if (cm) {
+    const cl = S.claims.find(x => x.id === cm[1]); if (!cl) return BAD(res, '없는 요구예요', 404);
+    if (cl.status !== 'open') return BAD(res, '이미 결정한 요구예요');
+    const orig = S.customBots.find(x => x.id === cl.origBotId), act = b.action, note = str(b.note, 200);
+    const croom = S.rooms.find(r => r.orgId === cl.orgId);
+    if (act === 'reject') {
+      cl.status = 'rejected';
+      if (croom) addMsg(croom, { from: 'sys', text: `원작 신고("${orig && orig.def ? orig.def.name : '봇'}")를 운영 기관이 받아들이지 않았어요${note ? `: ${note}` : '.'}` });
+    } else if (act === 'discard' || act === 'link') {
+      const t = S.customBots.find(x => x.id === (b.targetBotId || cl.targetBotId));
+      if (!orig || !orig.def) return BAD(res, '원작 봇이 없어졌어요. 기각해 주세요');
+      if (!t || !t.def || t.orgId === cl.orgId) return BAD(res, '복사한 봇을 골라 주세요 (신고한 기업의 봇이 아닌 것)');
+      if (t.discarded) return BAD(res, '이미 폐기한 봇이에요');
+      if (rootOf(orig) === t || t === orig) return BAD(res, '원작 봇이 오히려 이 봇에서 나온 것으로 연결돼 있어요. 먼저 원작 연결을 확인해 주세요');
+      cl.targetBotId = t.id;
+      if (act === 'discard') { discardBot(t, note || '원작 기업의 요구로 폐기', orig); cl.status = 'discarded'; }
+      else { linkOrigin(t, orig, note); cl.status = 'linked'; }
+    } else return BAD(res, '폐기·연결·기각 중 하나를 골라 주세요');
+    cl.note = note; cl.decidedAt = Date.now();
+    save(); emit('room', {}, '*'); return json(res, 200, { ok: true });
+  }
+  const dm = p.match(/^\/api\/admin\/bots\/(\w+)\/discard$/);
+  if (dm) {
+    const c = S.customBots.find(x => x.id === dm[1]); if (!c || !c.def) return BAD(res, '없는 봇이에요', 404);
+    if (c.discarded) return BAD(res, '이미 폐기한 봇이에요');
+    discardBot(c, str(b.reason, 200) || '운영 기관 결정', c.derivedFrom ? S.customBots.find(x => x.id === c.derivedFrom.botId) : null);
+    save(); emit('room', {}, '*'); return json(res, 200, { ok: true });
+  }
   // 원작 연결: 잘못 찾았으면 풀고(clear), 못 찾은 복사는 직접 연결(fromBotId)
   const om = p.match(/^\/api\/admin\/bots\/(\w+)\/origin$/);
   if (om) {
@@ -1392,11 +1447,7 @@ async function adminApi(req, res, p, sess) {
       const o = S.customBots.find(x => x.id === b.fromBotId);
       if (!o || o === c || o.orgId === c.orgId) return BAD(res, '원작은 다른 기업의 봇이어야 해요');
       const root = rootOf(o); if (root === c || root.orgId === c.orgId) return BAD(res, '서로 복사로 이어진 봇이라 연결할 수 없어요');
-      c.derivedFrom = { botId: root.id, orgId: root.orgId, name: root.def ? root.def.name : '', score: null, manual: true, at: Date.now() };
-      const roy = royaltyOf(originOf(c));
-      if (room) addMsg(room, { from: 'sys', text: `운영 기관이 "${c.def ? c.def.name : '봇'}"을(를) ${(orgById(root.orgId) || {}).name}의 봇을 복사한 것으로 확인했어요. 이 봇을 쓸 때마다 요청당 ${roy}토큰이 원작 기업에 가요.` });
-      const oroom = S.rooms.find(r => r.orgId === root.orgId);
-      if (oroom) addMsg(oroom, { from: 'sys', text: `운영 기관이 ${(orgById(c.orgId) || {}).name}의 "${c.def ? c.def.name : '봇'}"을(를) 우리 "${root.def ? root.def.name : '봇'}"의 복사로 연결했어요. 쓰일 때마다 요청당 ${roy}토큰을 받아요.` });
+      linkOrigin(c, root, '');
     }
     save(); emit('room', {}, '*'); return json(res, 200, { ok: true });
   }
@@ -1527,8 +1578,8 @@ async function userApi(req, res, p, sess) {
     // 올리는 기업에게 보여 줄 원작 정보 (원작 봇 이름은 공개된 봇일 때만)
     const originView = d => d ? { orgName: (orgById(d.orgId) || {}).name || d.orgName, name: (S.customBots.find(x => x.id === d.botId) || {}).publicStatus === 'public' ? d.name : '', score: d.score, royalty: royaltyOf({ rec: S.customBots.find(x => x.id === d.botId) }) } : null;
     const mineBot = id => S.customBots.find(c => c.id === id && c.orgId === org.id);
-    const view = c => ({ id: c.id, def: c.def, pending: c.pending, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, stats: c.stats || { uses: 0, earned: 0, byOrg: {} }, createdBy: c.createdBy, passes: Object.keys(c.passes || {}).filter(k => c.passes[k] > Date.now()).length, origin: c.derivedFrom ? originView(c.derivedFrom) : null, copies: S.customBots.filter(x => x.derivedFrom && x.derivedFrom.botId === c.id).length });
-    if (p === '/api/bots/mine' && req.method === 'GET') return json(res, 200, { bots: S.customBots.filter(c => c.orgId === org.id).map(view), prompt: MARKET.CLAUDE_PROMPT, kinds: MARKET.KINDS });
+    const view = c => ({ id: c.id, def: c.def, pending: c.pending, version: (c.versions || []).length, pricing: c.pricing, publicStatus: c.publicStatus, publicReason: c.publicReason, stats: c.stats || { uses: 0, earned: 0, byOrg: {} }, createdBy: c.createdBy, passes: Object.keys(c.passes || {}).filter(k => c.passes[k] > Date.now()).length, origin: c.derivedFrom ? originView(c.derivedFrom) : null, copies: S.customBots.filter(x => x.derivedFrom && x.derivedFrom.botId === c.id && !x.discarded).length, copyList: S.customBots.filter(x => x.derivedFrom && x.derivedFrom.botId === c.id && !x.discarded && x.def).map(x => ({ id: x.id, name: x.def.name, orgName: (orgById(x.orgId) || {}).name })), discarded: c.discarded ? { at: c.discarded.at, reason: c.discarded.reason } : null });
+    if (p === '/api/bots/mine' && req.method === 'GET') return json(res, 200, { bots: S.customBots.filter(c => c.orgId === org.id).map(view), claims: S.claims.filter(x => x.orgId === org.id).slice(-20).reverse().map(x => ({ id: x.id, at: x.at, origName: ((S.customBots.find(c => c.id === x.origBotId) || {}).def || {}).name || '', target: x.targetBotId ? `${x.targetOrgName} "${x.targetName}"` : x.targetText, want: x.want, status: x.status, note: x.note })), reportable: S.customBots.filter(c => c.orgId !== org.id && c.def && !c.discarded && c.publicStatus === 'public').map(c => ({ id: c.id, name: c.def.name, orgName: (orgById(c.orgId) || {}).name })), prompt: MARKET.CLAUDE_PROMPT, kinds: MARKET.KINDS });
     if (p === '/api/bots/export' && req.method === 'GET') {
       const qs = new URL(req.url, 'http://x').searchParams;
       // 기본 봇과 우리 기업이 만든 봇만 내보냄 (다른 기업의 봇은 역할 지시문을 볼 수 없음)
@@ -1555,9 +1606,15 @@ async function userApi(req, res, p, sess) {
     if (p === '/api/bots/submit') {
       const v = MARKET.validateDef(b.def); if (v.error) return BAD(res, v.error);
       let c;
-      if (b.botId) { c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404); }
+      if (b.botId) { c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404); if (c.discarded) return BAD(res, '운영 기관이 폐기한 봇이라 업데이트할 수 없어요'); }
       else { c = { id: 'u' + crypto.randomBytes(4).toString('hex'), orgId: org.id, def: null, versions: [], pricing: { perUse: null, passDays: null, passPrice: null }, publicStatus: null, passes: {}, stats: { uses: 0, earned: 0, byOrg: {} }, createdBy: user.name, createdAt: Date.now() }; S.customBots.push(c); }
-      c.pending = { def: v.def, by: user.name, at: Date.now(), sourceUrl: str(b.sourceUrl, 500), kind: c.def ? 'update' : 'new', derived: findOrigin(org, v.def.role, c) };
+      const derived = findOrigin(org, v.def.role, c);
+      // 운영 기관이 폐기한 봇을 그대로(또는 거의 그대로) 다시 올리는 것은 막음
+      const again = S.customBots.find(x => x !== c && x.orgId === org.id && x.discarded && x.def && MARKET.overlap(v.def.role, x.def.role, copyIgnore()).score);
+      if (again) { if (!c.def && !c.versions.length) S.customBots = S.customBots.filter(x => x !== c); return BAD(res, `운영 기관이 폐기한 "${again.def.name}"과(와) 거의 같아서 올릴 수 없어요. 운영 기관에 문의해 주세요.`); }
+      // 운영 기관이 폐기한 복사본과 같은 원작을 다시 베껴 올리는 것은 막음
+      if (derived && S.customBots.some(x => x.orgId === org.id && x.discarded && x.discarded.originBotId === derived.botId)) { if (!c.def && !c.versions.length) S.customBots = S.customBots.filter(x => x !== c); return BAD(res, `운영 기관이 복사로 확인해 폐기한 봇과 같은 원작(${derived.orgName})을 베낀 것으로 보여 올릴 수 없어요. 직접 만든 봇이라면 운영 기관에 문의해 주세요.`); }
+      c.pending = { def: v.def, by: user.name, at: Date.now(), sourceUrl: str(b.sourceUrl, 500), kind: c.def ? 'update' : 'new', derived };
       const room = S.rooms.find(r => r.id === b.roomId && r.orgId === org.id) || S.rooms.find(r => r.orgId === org.id);
       if (room) addMsg(room, { from: 'sys', text: `${user.name}님이 ${c.def ? `"${c.def.name}" 봇 업데이트` : `새 봇 "${v.def.name}"`}를 올렸어요. 확인하고 승인하면 우리 기업 봇 목록에 ${c.def ? '반영돼요' : '올라가요'}.`, botReq: { botId: c.id, status: null, kind: c.pending.kind, def: v.def, by: user.name, sourceUrl: c.pending.sourceUrl, origin: c.derivedFrom ? originView(c.derivedFrom) : originView(c.pending.derived) } });
       save(); emit('room', {}, org.id);
@@ -1589,6 +1646,25 @@ async function userApi(req, res, p, sess) {
       if (room) addMsg(room, { from: 'sys', text: `"${c.def.name}" ${kind === 'update' ? `업데이트(버전 ${c.versions.length})를 반영했어요` : '봇을 우리 기업 봇 목록에 올렸어요. "전문가 초대"에서 초대할 수 있어요'}.${wasPublic && kind === 'update' ? ' 다른 기업에 공개 중이던 봇이라 관리자 확인이 끝날 때까지 다른 기업은 잠시 쓸 수 없어요.' : ''}` });
       save(); emit('room', {}, org.id); return json(res, 200, { ok: true });
     }
+    if (p === '/api/bots/claim') {
+      // 원작 기업이 "이 봇이 우리 봇을 복사했다"고 운영 기관에 요구 (폐기 또는 원작 연결)
+      const o = mineBot(b.origBotId); if (!o || !o.def || o.discarded) return BAD(res, '우리 기업이 만든 봇을 원작으로 골라 주세요', 404);
+      const want = b.want === 'discard' ? 'discard' : b.want === 'link' ? 'link' : null; if (!want) return BAD(res, '폐기 또는 원작 연결 중 하나를 골라 주세요');
+      const reason = str(b.reason, 500); if (reason.length < 5) return BAD(res, '왜 복사라고 보는지 적어 주세요 (5자 이상)');
+      let t = null, targetText = '';
+      if (b.targetBotId) {
+        t = S.customBots.find(x => x.id === b.targetBotId && x.def && !x.discarded && x.orgId !== org.id);
+        // 우리가 볼 수 있는 봇만: 공개된 봇, 또는 우리 봇의 복사로 이미 연결된 봇
+        if (!t || !(t.publicStatus === 'public' || (t.derivedFrom && t.derivedFrom.botId === o.id))) return BAD(res, '신고할 수 있는 봇이 아니에요. 목록에 없으면 기업·봇 이름을 적어 주세요', 404);
+      } else { targetText = str(b.targetText, 200); if (targetText.length < 2) return BAD(res, '복사한 봇을 고르거나, 어느 기업의 어떤 봇인지 적어 주세요'); }
+      if (S.claims.filter(x => x.orgId === org.id && x.status === 'open').length >= 10) return BAD(res, '처리 중인 신고가 10개예요. 운영 기관 결정을 기다려 주세요');
+      if (t && S.claims.some(x => x.status === 'open' && x.targetBotId === t.id && x.orgId === org.id)) return BAD(res, '이미 신고한 봇이에요');
+      const cl = { id: newId('q'), at: Date.now(), orgId: org.id, by: user.name, origBotId: o.id, targetBotId: t ? t.id : null, targetText, targetName: t ? t.def.name : '', targetOrgName: t ? (orgById(t.orgId) || {}).name : '', want, reason, status: 'open', note: '', decidedAt: null };
+      S.claims.push(cl); save(); emit('room', {}, '*');
+      const room = S.rooms.find(r => r.orgId === org.id);
+      if (room) addMsg(room, { from: 'sys', text: `${user.name}님이 "${o.def.name}"의 복사로 보이는 봇(${t ? `${cl.targetOrgName} "${cl.targetName}"` : targetText})을 운영 기관에 신고했어요 (요구: ${want === 'discard' ? '폐기' : '원작으로 연결'}). 결정되면 알려 드려요.` });
+      return json(res, 200, { ok: true, id: cl.id });
+    }
     if (p === '/api/bots/pricing') {
       const c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404);
       const int = (v, lo, hi) => v === '' || v == null ? null : (Number.isInteger(Number(v)) && Number(v) >= lo && Number(v) <= hi ? Number(v) : NaN);
@@ -1600,6 +1676,7 @@ async function userApi(req, res, p, sess) {
     }
     if (p === '/api/bots/publish' || p === '/api/bots/unpublish' || p === '/api/bots/delete') {
       const c = mineBot(b.botId); if (!c) return BAD(res, '우리 기업이 만든 봇이 아니에요', 404);
+      if (c.discarded) return BAD(res, '운영 기관이 폐기한 봇이에요');
       if (p === '/api/bots/delete') { S.customBots = S.customBots.filter(x => x !== c); save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
       if (p === '/api/bots/unpublish') { c.publicStatus = null; save(); emit('room', {}, '*'); return json(res, 200, { ok: true }); }
       if (!c.def) return BAD(res, '먼저 기업방에서 승인해 주세요');

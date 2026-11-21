@@ -118,6 +118,7 @@ button{cursor:pointer}
 .vclist{list-style:none;margin:0;padding:0}.vclist li{border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--card)}
 .vclist a{overflow-wrap:anywhere;font-size:13px}.revlist li{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .tag.mk{color:#7a5af8}
+.rad{display:flex;align-items:center;gap:10px;min-height:44px;font-size:14px;cursor:pointer}.rad input{width:20px;height:20px;min-height:0;margin:0;flex:none;accent-color:var(--pri)}
 .mkt textarea{width:100%;min-height:120px;font:13px/1.5 ui-monospace,monospace}
 .mkprev{border:1.5px solid #7a5af8;border-radius:14px;padding:14px;background:var(--card);display:flex;flex-direction:column;gap:8px}
 .mkprev pre{white-space:pre-wrap;font-size:12px;max-height:180px;overflow:auto;background:var(--side);border-radius:10px;padding:10px;margin:0}
@@ -486,17 +487,27 @@ $('todoReset').addEventListener('click',async e=>{const b=e.currentTarget;if(b.t
 /* ===== 봇 마켓 ===== */
 const owTxt=o=>`${esc(o.orgName)}${o.name?` "${esc(o.name)}"`:''} 봇과 ${o.score?o.score+'% ':''}같아요. 쓸 때마다 요청당 ${o.royalty}토큰이 원작 기업에 가요.`;
 
-let MK=null, mkDraft=null, mkTarget=null;
+let MK=null, mkDraft=null, mkTarget=null, mkClaim=null;
+const CST={open:'운영 기관 확인 중',discarded:'폐기됨',linked:'원작으로 연결됨',rejected:'받아들여지지 않음'};
+function claimForm(b){const opts=[...(b.copyList||[]),...MK.reportable.filter(r=>!(b.copyList||[]).some(x=>x.id===r.id))];
+ return `<div class="mkprev" style="margin-top:8px" data-claimbox="${b.id}"><b>복사 신고: "${esc(b.def.name)}"이(가) 원작</b>
+ <label class="note" style="padding:0">복사한 봇<select class="field" data-ct><option value="">목록에 없음 (아래에 적기)</option>${opts.map(o=>`<option value="${o.id}"${mkClaim.target===o.id?' selected':''}>${esc(o.name)} · ${esc(o.orgName)}</option>`).join('')}</select></label>
+ <input class="field" data-ctext maxlength="200" placeholder="목록에 없으면: 기업 이름·봇 이름·어디서 봤는지">
+ <div role="radiogroup" aria-label="요구" style="display:flex;flex-direction:column;gap:4px"><label class="rad"><input type="radio" name="cw${b.id}" value="link"${mkClaim.want!=='discard'?' checked':''}>원작으로 연결 (쓰일 때마다 토큰 받기)</label><label class="rad"><input type="radio" name="cw${b.id}" value="discard"${mkClaim.want==='discard'?' checked':''}>폐기 (더 못 쓰게)</label></div>
+ <textarea class="field" data-creason maxlength="500" placeholder="왜 복사라고 보는지 (예: 역할 지시문 3~5번 문장이 그대로예요, 우리가 9월에 먼저 만들었어요)" style="min-height:80px"></textarea>
+ <div class="acts"><button class="btn" type="button" data-csend="${b.id}">운영 기관에 신고</button><button class="btn ghost" type="button" data-ccancel>닫기</button></div></div>`}
 const ST={pending:'공개 심사 중',public:'다른 기업에 공개 중',rejected:'공개 거절됨'};
 async function openMarket(){MK=await api('/api/bots/mine');mkDraft=null;mkTarget=null;renderMarket();open('mkVeil')}
 function renderMarket(){
  const tgt=mkTarget&&MK.bots.find(b=>b.id===mkTarget);
  const prev=mkDraft?`<div class="mkprev"><b>${esc(mkDraft.def.name)} · ${esc(MK.kinds[mkDraft.def.kind])}${mkDraft.def.ppt?' + PPT':''}</b><div class="note" style="padding:0">${esc(mkDraft.def.desc)}</div>${mkDraft.origin?`<div class="docerr" style="padding:0">다른 기업이 먼저 만든 봇을 복사한 것으로 보여요: ${owTxt(mkDraft.origin)} 직접 만든 봇이라면 올린 뒤 운영 기관에 알려 주세요.</div>`:''}${mkDraft.meta&&mkDraft.meta.from?`<div class="note" style="padding:0">내보낸 곳: ${esc(mkDraft.meta.from)}${mkDraft.meta.version?` · 버전 ${esc(mkDraft.meta.version)}`:''}${mkDraft.meta.at?` · ${esc(mkDraft.meta.at)}`:''}</div>`:''}${mkDraft.def.quick.length?`<div class="note" style="padding:0">빠른 요청: ${mkDraft.def.quick.map(esc).join(' · ')}</div>`:''}<pre>${esc(mkDraft.def.role)}</pre><div class="acts"><button class="btn" type="button" id="mkSubmit">${tgt?`"${esc(tgt.def?tgt.def.name:'')}" 업데이트로 `:''}기업방에 승인 요청</button><button class="btn ghost" type="button" id="mkReset">다시 고르기</button></div></div>`:'';
- const list=MK.bots.map(b=>{const d=b.def||(b.pending&&b.pending.def)||{},pr=b.pricing||{};return `<div class="mkbot"><b>${esc(d.name||'')}</b> <span class="st">${b.def?`버전 ${b.version}`:'기업방 승인 대기'}${b.pending&&b.def?' · 업데이트 승인 대기':''}</span>${b.publicStatus?` <span class="st">${ST[b.publicStatus]}</span>`:''}
+ const list=MK.bots.map(b=>{const d=b.def||(b.pending&&b.pending.def)||{},pr=b.pricing||{};
+  if(b.discarded)return `<div class="mkbot"><b>${esc(d.name||'')}</b> <span class="st" style="color:#b42318">운영 기관이 폐기함</span><div class="note" style="padding:0">사유: ${esc(b.discarded.reason)} · 더 쓰거나 업데이트할 수 없어요.</div></div>`;
+  return `<div class="mkbot"><b>${esc(d.name||'')}</b> <span class="st">${b.def?`버전 ${b.version}`:'기업방 승인 대기'}${b.pending&&b.def?' · 업데이트 승인 대기':''}</span>${b.publicStatus?` <span class="st">${ST[b.publicStatus]}</span>`:''}
   <div class="note" style="padding:0">${esc(d.desc||'')}${b.publicReason?` · 사유: ${esc(b.publicReason)}`:''}</div>
-  ${b.origin?`<div class="note" style="padding:0;color:#b54708">원작 연결: ${owTxt(b.origin)}</div>`:''}${b.copies?`<div class="note" style="padding:0;color:#7a5af8">이 봇을 복사한 것으로 찾은 다른 기업 봇 ${b.copies}개 — 쓰일 때마다 우리 기업이 원작 몫을 받아요.</div>`:''}<div class="note" style="padding:0">쓰인 횟수 ${b.stats.uses} · 다른 기업에게 받은 토큰 ${b.stats.earned}${b.passes?` · 이용권 쓰는 기업 ${b.passes}곳`:''}</div>
+  ${b.origin?`<div class="note" style="padding:0;color:#b54708">원작 연결: ${owTxt(b.origin)}</div>`:''}${b.copies?`<div class="note" style="padding:0;color:#7a5af8">이 봇을 복사한 것으로 찾은 다른 기업 봇 ${b.copies}개 — 쓰일 때마다 우리 기업이 원작 몫을 받아요.</div>${b.copyList.map(x=>`<div class="inl"><span>· ${esc(x.name)} (${esc(x.orgName)})</span><button class="btn ghost" type="button" data-cquick="${b.id}" data-cto="${x.id}">폐기 요청</button></div>`).join('')}`:''}<div class="note" style="padding:0">쓰인 횟수 ${b.stats.uses} · 다른 기업에게 받은 토큰 ${b.stats.earned}${b.passes?` · 이용권 쓰는 기업 ${b.passes}곳`:''}</div>
   ${b.def?`<div class="inl"><span>다른 기업이 쓸 때 →</span> 요청당 <input class="field" type="number" min="0" data-pu value="${pr.perUse??''}" placeholder="없음" aria-label="요청당 토큰">토큰 · 이용권 <input class="field" type="number" min="1" data-pd value="${pr.passDays??''}" placeholder="일" aria-label="이용권 기간(일)">일 <input class="field" type="number" min="1" data-pp value="${pr.passPrice??''}" placeholder="토큰" aria-label="이용권 토큰">토큰 <button class="btn ghost" type="button" data-price="${b.id}">저장</button></div>`:''}
-  <div class="acts"><button class="btn ghost" type="button" data-upd="${b.id}">업데이트 올리기</button>${b.def&&b.publicStatus!=='public'&&b.publicStatus!=='pending'?`<button class="btn ghost" type="button" data-pub="${b.id}">다른 기업에 공개 요청</button>`:''}${b.publicStatus==='public'||b.publicStatus==='pending'?`<button class="btn ghost" type="button" data-unpub="${b.id}">공개 중단</button>`:''}${b.def?`<a class="btn ghost" href="/api/bots/export?id=${encodeURIComponent(b.id)}" download>내보내기</a>`:''}<button class="btn ghost" type="button" data-del="${b.id}">삭제</button></div><div class="payerr" data-err></div></div>`}).join('');
+  <div class="acts"><button class="btn ghost" type="button" data-upd="${b.id}">업데이트 올리기</button>${b.def&&b.publicStatus!=='public'&&b.publicStatus!=='pending'?`<button class="btn ghost" type="button" data-pub="${b.id}">다른 기업에 공개 요청</button>`:''}${b.publicStatus==='public'||b.publicStatus==='pending'?`<button class="btn ghost" type="button" data-unpub="${b.id}">공개 중단</button>`:''}${b.def?`<a class="btn ghost" href="/api/bots/export?id=${encodeURIComponent(b.id)}" download>내보내기</a><button class="btn ghost" type="button" data-claim="${b.id}">복사 신고</button>`:''}<button class="btn ghost" type="button" data-del="${b.id}">삭제</button></div><div class="payerr" data-err></div>${mkClaim&&mkClaim.botId===b.id&&b.def?claimForm(b):''}</div>`}).join('');
  $('mkMain').innerHTML=`<h4 class="dirh">1. Claude로 봇 만들기</h4><p class="note" style="padding:0">아래 안내문 끝에 만들고 싶은 봇을 적어 Claude에게 보내세요. Claude가 봇 정의를 담은 아티팩트를 만들어 줘요. 아티팩트를 "공개"로 공유하고 링크를 아래에 넣으세요.</p><div class="acts"><button class="btn ghost" type="button" id="mkCopy">Claude 안내문 복사</button></div>
  <h4 class="dirh">2. ${tgt?`"${esc(tgt.def?tgt.def.name:'')}" 업데이트 올리기 <button class="btn ghost" type="button" id="mkNoTarget">새 봇으로</button>`:'봇 올리기'}</h4>
  <div class="inl" style="display:flex;gap:6px;flex-wrap:wrap"><input class="field" id="mkUrl" placeholder="https:// 공개 링크 (Claude 아티팩트, GitHub 등)" style="flex:1 1 260px"><button class="btn" type="button" id="mkFetch">링크 읽기</button></div>
@@ -504,6 +515,7 @@ function renderMarket(){
  <details style="margin-top:8px"><summary style="cursor:pointer;min-height:40px">링크가 안 읽히면 정의(JSON)를 붙여넣기</summary><textarea class="field" id="mkText" placeholder='{"hamkkebot":1, "name": …}'></textarea><div class="acts"><button class="btn ghost" type="button" id="mkParse">붙여넣은 정의 확인</button></div></details>
  <div class="docerr" id="mkErr"></div>${prev}
  <h4 class="dirh">3. 우리 기업이 만든 봇</h4>${list||'<p class="note" style="padding:0">아직 없어요.</p>'}
+ ${MK.claims.length?`<h4 class="dirh">복사 신고 내역</h4>${MK.claims.map(c=>`<div class="mkbot"><b>${esc(c.target)}</b> <span class="st">${CST[c.status]}</span><div class="note" style="padding:0">원작 "${esc(c.origName)}" · 요구: ${c.want==='discard'?'폐기':'원작으로 연결'} · ${new Date(c.at).toLocaleDateString('ko-KR')}${c.note?` · 운영 기관: ${esc(c.note)}`:''}</div></div>`).join('')}`:''}
  <h4 class="dirh">4. 기본 봇 내보내기</h4><p class="note" style="padding:0">기본 봇을 파일로 받아 역할 지시문을 고친 뒤 우리 기업 봇으로 올릴 수 있어요. 다른 기업이 만든 봇은 내보낼 수 없어요.</p><div class="acts">${S.bots.filter(b=>!b.custom&&!b.soon).map(b=>`<a class="btn ghost" href="/api/bots/export?id=${encodeURIComponent(b.id)}" download>${esc(b.name)}</a>`).join('')}</div>`;
 }
 $('mkVeil').addEventListener('change',async e=>{
@@ -519,6 +531,12 @@ $('mkVeil').addEventListener('click',async e=>{
  if(t.id==='mkReset'){mkDraft=null;return renderMarket()}
  if(t.id==='mkNoTarget'){mkTarget=null;return renderMarket()}
  if(t.id==='mkSubmit'){t.disabled=true;const j=await api('/api/bots/submit',{def:mkDraft.def,sourceUrl:mkDraft.sourceUrl||'',roomId:room().id,botId:mkTarget||undefined});if(j.error){t.disabled=false;return er(j.error)}close(t);return}
+ if(d.claim){mkClaim={botId:d.claim,target:'',want:'link'};return renderMarket()}
+ if(d.cquick){mkClaim={botId:d.cquick,target:d.cto,want:'discard'};renderMarket();const bx=document.querySelector(`[data-claimbox="${d.cquick}"]`);if(bx)bx.scrollIntoView({block:'center'});return}
+ if(t.hasAttribute('data-ccancel')){mkClaim=null;return renderMarket()}
+ if(d.csend){const bx=t.closest('[data-claimbox]'),w=bx.querySelector(`input[name="cw${d.csend}"]:checked`);t.disabled=true;
+  const j=await api('/api/bots/claim',{origBotId:d.csend,targetBotId:bx.querySelector('[data-ct]').value||undefined,targetText:bx.querySelector('[data-ctext]').value,want:w?w.value:'link',reason:bx.querySelector('[data-creason]').value});
+  t.disabled=false;if(j.error)return er(j.error);mkClaim=null;MK=await api('/api/bots/mine');return renderMarket()}
  if(d.upd){mkTarget=d.upd;mkDraft=null;renderMarket();$('mkUrl').focus();return}
  if(d.price){const j=await api('/api/bots/pricing',{botId:d.price,perUse:box.querySelector('[data-pu]').value,passDays:box.querySelector('[data-pd]').value,passPrice:box.querySelector('[data-pp]').value});if(j.error)return er(j.error);MK=await api('/api/bots/mine');return renderMarket()}
  if(d.pub){const j=await api('/api/bots/publish',{botId:d.pub});if(j.error)return er(j.error);MK=await api('/api/bots/mine');return renderMarket()}
