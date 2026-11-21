@@ -215,7 +215,15 @@ async function callExpert(room, ex, question, opt = {}) {
     room.consults = room.consults || {};
     // 단가는 상담이 시작되는 순간 고정. 잔액 부족을 알고 수락한 상담은 '잔액 소진' 경고를 다시 보내지 않음
     room.consults[ex.id] = { startAt: Date.now(), rate: opt.rate || ex.rate, warned: !!opt.accepted };
-    addMsg(room, { from: 'sys', text: opt.accepted ? `${ex.name} 전문가가 잔액이 부족한 것을 확인하고 상담을 수락했어요 (시간당 ${opt.rate || ex.rate}토큰)` : `${ex.name} 전문가를 호출했어요 (시간당 ${ex.rate}토큰)` });
+    addMsg(room, { from: 'sys', text: opt.joined ? `승인에 따라 ${ex.name} 전문가가 상담에 참여했어요 (시간당 ${opt.rate}토큰)` : opt.accepted ? `${ex.name} 전문가가 잔액이 부족한 것을 확인하고 상담을 수락했어요 (시간당 ${opt.rate || ex.rate}토큰)` : `${ex.name} 전문가를 호출했어요 (시간당 ${ex.rate}토큰)` });
+  }
+  if (opt.joined) {
+    const org = orgById(room.orgId) || {};
+    const low = org.wallet < opt.rate ? `\n주의: 이 기업의 잔액은 ${org.wallet}토큰으로 1시간 단가보다 적어요 (약 ${fmtMin(coverMinutes(org.wallet, opt.rate))} 상담분).` : '';
+    const text = `기업이 ${ex.name}님의 참여를 승인했어요. 지금부터 상담 시간이 계산돼요 (시간당 ${opt.rate}토큰).${low}\n팀방에서 /send 로 기업에 보낼 수 있어요. 마칠 때는 /end`;
+    const g = room.xg && S.expertGroups[room.xg];
+    if (g && g.members.includes(ex.id)) tgSend(room.xg, text); else dmExpert(ex, room, text);
+    return;
   }
   if (opt.accepted) {
     const ok = await dmExpert(ex, room, `상담을 시작했어요. 위 요청 메시지나 이 메시지에 "답장"하면 기업 채팅방에 전달돼요. 상담을 마치려면 /end`);
@@ -364,9 +372,11 @@ const TEAM_HELP = `전문가 팀방 사용법
 /use 번호 — 그 상담을 이 팀방에 연결 (기업 방의 새 메시지가 여기 보임)
 /send 내용 — 연결된 상담의 기업에게 보내기 (/s 로 줄여 써도 돼요)
    다른 메시지에 "답장"으로 /send 를 보내면 그 메시지 내용을 보내요
+/join 하고 싶은 말 — 호출되지 않은 상담에 참여 요청 (기업이 승인하면 참여)
+   /join 번호 하고 싶은 말 — /rooms 목록의 다른 상담에 요청
 /end — 내 상담 종료
 /detach — 연결 해제
-기업에 보낼 수 있는 사람은 그 상담에 호출된 전문가뿐이에요.`;
+기업에 보낼 수 있는 사람은 그 상담에 호출됐거나 참여 승인을 받은 전문가뿐이에요.`;
 const teamRooms = g => S.rooms.filter(r => (r.humans || []).some(id => g.members.includes(id)));
 function detachTeam(room, why) {
   const gid = room.xg; if (!gid) return;
@@ -404,13 +414,27 @@ async function handleTeam(msg, ex, cmd, arg) {
     return tgSend(chat.id, `"${roomLabel(target)}" 상담을 연결했어요. 이제 기업 방의 새 메시지가 여기 보여요.\n\n최근 대화\n${recent || '(없음)'}\n\n기업에 보내려면 /send 내용`);
   }
   if (cmd === 'detach') { if (!room) return tgSend(chat.id, '연결된 상담이 없어요.'); return detachTeam(room); }
+  if (cmd === 'join') {
+    // /join [번호] [하고 싶은 말] — 번호가 없으면 이 팀방에 연결된 상담
+    const m = arg.match(/^(\d+)\s*([\s\S]*)$/);
+    const target = m ? roomById(g.list[parseInt(m[1], 10) - 1]) : room;
+    const note = str(m ? m[2] : arg, 300);
+    if (!target) return tgSend(chat.id, m ? '번호가 맞지 않아요. 먼저 /rooms 로 목록을 확인해 주세요.' : '연결된 상담이 없어요. /rooms 로 번호를 확인한 뒤 /join 번호 로 요청해 주세요.');
+    if (active(target)) return tgSend(chat.id, '이미 이 상담에 참여하고 있어요.');
+    if (!ex.rate) return tgSend(chat.id, '시간당 토큰을 먼저 정해 주세요. 1:1 대화에서 /rate 숫자 또는 /login');
+    if (!ex.available) return tgSend(chat.id, '상담 받기가 꺼져 있어요. 1:1 대화에서 /on 으로 켠 뒤 요청해 주세요.');
+    if (target.msgs.some(x => x.join && x.join.expertId === ex.id && !x.join.status)) return tgSend(chat.id, '이미 참여 요청을 보냈어요. 기업의 답을 기다려 주세요.');
+    addMsg(target, { from: 'sys', text: `${ex.name} 전문가(${ex.field})가 이 상담에 참여하고 싶어 해요. 승인하면 시간당 ${ex.rate}토큰으로 상담 시간이 따로 계산돼요.`,
+      join: { expertId: ex.id, name: ex.name, field: ex.field, desc: ex.desc, career: ex.career, rate: ex.rate, note, status: null, teamId: chat.id } }, { fromTeam: true });
+    return tgSend(chat.id, `"${roomLabel(target)}" 기업에 ${ex.name}님의 참여 요청을 보냈어요 (시간당 ${ex.rate}토큰). 기업이 승인하면 알려 드릴게요.`);
+  }
 
   // 보낼 상담: 연결된 상담, 없으면 내가 맡은 상담이 하나일 때 그것
   const mine = S.rooms.filter(active);
   const target = room || (mine.length === 1 ? mine[0] : null);
   if (cmd === 'send' || cmd === 's') {
     if (!target) return tgSend(chat.id, mine.length ? '맡은 상담이 여러 개예요. /rooms 와 /use 번호 로 먼저 연결해 주세요.' : '내가 호출된 상담이 없어요.');
-    if (!active(target)) return tgSend(chat.id, `${ex.name}님은 이 상담에 호출되지 않아서 보낼 수 없어요. 기업이 호출하면 보낼 수 있어요.`);
+    if (!active(target)) return tgSend(chat.id, `${ex.name}님은 이 상담에 호출되지 않아서 보낼 수 없어요. 참여하고 싶다면 /join 으로 기업에 요청해 주세요.`);
     const rep = msg.reply_to_message;
     let text = arg, note = '';
     if (!text && rep && rep.text) {
@@ -469,7 +493,7 @@ async function handleTelegram(msg) {
   // 기업 방과 연결되지 않은 그룹에서 전문가가 쓰면 '전문가 팀방'으로 동작
   if (!isPrivate && !roomByChat(chat.id)) {
     const sender = expertByChat(msg.from.id); // 텔레그램 1:1 chat id = 사용자 id
-    const teamCmds = ['team', 'rooms', 'use', 'send', 's', 'end', 'detach'];
+    const teamCmds = ['team', 'rooms', 'use', 'send', 's', 'end', 'detach', 'join'];
     if (S.expertGroups[chat.id] && cmd !== 'link') return handleTeam(msg, sender, cmd, arg);
     if (sender && teamCmds.includes(cmd)) return handleTeam(msg, sender, cmd, arg);
   }
@@ -529,7 +553,7 @@ async function pollTelegram() {
     { command: 'help', description: '사용법' }, { command: 'bots', description: '전문가 봇 목록' },
     { command: 'link', description: '웹앱 채팅방과 연결' }, { command: 'unlink', description: '연결 해제' },
     ...BOTS.filter(b => !b.soon).map(b => ({ command: b.id, description: b.name })),
-    { command: 'team', description: '(전문가) 이 그룹을 전문가 팀방으로' }, { command: 'send', description: '(전문가 팀방) 기업에게 보내기' }, { command: 'use', description: '(전문가 팀방) 상담 연결' },
+    { command: 'team', description: '(전문가) 이 그룹을 전문가 팀방으로' }, { command: 'send', description: '(전문가 팀방) 기업에게 보내기' }, { command: 'use', description: '(전문가 팀방) 상담 연결' }, { command: 'join', description: '(전문가 팀방) 상담 참여 요청' },
     { command: 'login', description: '(전문가) 프로필 페이지 로그인 코드' }, { command: 'rate', description: '(전문가) 시간당 토큰 정하기' }
   ] });
   console.log(`텔레그램: @${tgUsername} 으로 중계 시작`);
@@ -733,7 +757,7 @@ async function userApi(req, res, p, sess) {
     const r = { id: newId('r'), orgId: org.id, name: str(b.name, 40) || '새 채팅방', bots: [], humans: [], msgs: [] };
     S.rooms.unshift(r); save(); emit('room', { roomId: r.id }, org.id); return json(res, 200, r);
   }
-  const m = p.match(/^\/api\/rooms\/(\w+)\/(invite|kick|messages|link|unlink|rename|call|end|review|pay|cancelcall)$/);
+  const m = p.match(/^\/api\/rooms\/(\w+)\/(invite|kick|messages|link|unlink|rename|call|end|review|pay|cancelcall|join)$/);
   const room = m && roomById(m[1]);
   if (!room || room.orgId !== org.id) return BAD(res, '방이 없어요', 404); // 다른 기업의 방은 없는 것으로 취급
   const act = m[2];
@@ -749,6 +773,24 @@ async function userApi(req, res, p, sess) {
   if (act === 'rename') { room.name = str(b.name, 40) || room.name; save(); emit('room', { roomId: room.id }, org.id); return json(res, 200, { ok: true }); }
   if (act === 'link') { room.linkCode = code6(); save(); return json(res, 200, { code: room.linkCode, username: tgUsername }); }
   if (act === 'unlink') { if (room.tgChatId) tgSend(room.tgChatId, '웹앱에서 연결을 해제했어요.'); room.tgChatId = null; room.tgTitle = null; addMsg(room, { from: 'sys', text: '텔레그램 연결이 해제됐어요' }); return json(res, 200, { ok: true }); }
+  if (act === 'join') {
+    // 팀방에서 온 참여 요청 승인·거절 (요청 메시지 하나당 한 번)
+    const src = room.msgs.find(x => x.id === b.msgId);
+    if (!src || !src.join) return BAD(res, '참여 요청이 없어요', 404);
+    if (src.join.status) return BAD(res, '이미 처리된 요청이에요');
+    const ex = expertById(src.join.expertId); if (!ex || !ex.tgChatId) return BAD(res, '전문가가 삭제됐어요', 404);
+    const tell = t => { if (src.join.teamId) tgSend(src.join.teamId, t); else dmExpert(ex, room, t); };
+    if (!b.approve) {
+      src.join.status = 'declined'; save();
+      addMsg(room, { from: 'sys', text: `${ex.name} 전문가의 참여 요청을 거절했어요` }, { fromTeam: true });
+      tell(`"${roomLabel(room)}" 기업이 ${ex.name}님의 참여 요청을 이번에는 거절했어요.`);
+      return json(res, 200, { ok: true });
+    }
+    if ((room.humans || []).includes(ex.id)) { src.join.status = 'approved'; save(); return json(res, 200, { ok: true }); }
+    src.join.status = 'approved'; save();
+    await callExpert(room, ex, '', { joined: true, rate: src.join.rate }); // 요청 때 보여 준 단가로 고정
+    return json(res, 200, { ok: true });
+  }
   if (act === 'cancelcall') {
     const req = (room.pending || []).find(p => p.expertId === b.expertId);
     if (!req) return BAD(res, '기다리는 요청이 없어요', 404);

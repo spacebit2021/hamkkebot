@@ -83,6 +83,7 @@ button{cursor:pointer}
 .prof summary{cursor:pointer;font-size:13px;color:var(--mute);min-height:32px;display:flex;align-items:center}.prof p{font-size:14px;margin:4px 0}
 .xtools{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}.xtools input{flex:1 1 180px}.xtools select{flex:0 1 160px}
 .paycalc{font-size:14px;color:var(--mute)}.paycalc b{color:var(--ink)}
+.jrate{white-space:nowrap;font-size:12px;color:var(--mute)}.jrate b{font:800 20px "Gothic A1";color:#06a77d}
 .typing{color:var(--mute);font-size:14px;padding:0 4px}
 .tools{display:flex;gap:6px;margin-top:6px}
 .tools button{border:0;background:none;color:var(--mute);font-size:13px;min-height:32px;padding:0 6px}
@@ -244,6 +245,10 @@ function renderTop(){
  $('note').textContent=!S.ai?'서버에 ANTHROPIC_API_KEY가 없어 봇이 답하지 못해요.':'봇 답변은 초안입니다. 수치·인증·성과는 반드시 직접 확인 후 사용하세요.';
 }
 function msgHTML(m,i){
+ if(m.from==='sys'&&m.join){const j=m.join,head=`<div class="msg sys">${esc(m.text)}</div>`;
+  if(j.status)return head+`<div class="msg sys">${j.status==='approved'?'참여를 승인했어요':'참여 요청을 거절했어요'}</div>`;
+  const mins=j.rate?Math.floor(S.wallet/j.rate*60):0, low=S.wallet<j.rate;
+  return head+`<div class="paycard joincard" data-joinmsg="${m.id}"><div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><b>${esc(j.name)} 전문가 참여 요청</b><span class="jrate"><b>${j.rate}</b> 토큰/시간</span></div><div class="paycalc">${esc(j.field)}${j.desc?' · '+esc(j.desc):''}</div>${j.career?`<details class="prof"><summary>경력·자격 보기</summary><p style="white-space:pre-wrap">${esc(j.career)}</p></details>`:''}${j.note?`<div class="bubble" style="border-radius:12px">${esc(j.note)}</div>`:''}<div class="paycalc">승인하면 지금부터 이 전문가의 상담 시간이 따로 계산돼요. 현재 잔액 ${S.wallet}개로 이 전문가는 약 ${mins>=60?Math.floor(mins/60)+'시간 '+(mins%60?mins%60+'분':''):mins+'분'} 상담할 수 있어요.</div>${low?'<div class="payerr">잔액이 이 전문가의 1시간 단가보다 적어요. 승인하면 전문가에게도 이 사실을 알려요.</div>':''}<div class="payerr" data-err></div><div class="acts"><button class="btn" type="button" data-joinok>승인</button><button class="btn ghost" type="button" data-joinno>거절</button></div></div>`}
  if(m.from==='sys'&&m.pay){const x=expById(m.pay.expertId);const head=`<div class="msg sys">${esc(m.text)}</div>`;
   if(m.pay.paid!=null)return head;
   if(!x)return head;
@@ -259,7 +264,7 @@ function msgHTML(m,i){
 function renderLog(){
  const r=room(); if(!r)return;
  const t=typing[r.id]?`<div class="typing">${esc((botById(typing[r.id])||{}).name||'봇')}이(가) 쓰는 중…</div>`:'';
- const keep={};document.querySelectorAll('.paycard').forEach(c=>keep[c.dataset.pay]=[c.querySelector('[data-amtin]').value,c.querySelector('[data-memo]').value]);
+ const keep={};document.querySelectorAll('.paycard[data-pay]').forEach(c=>keep[c.dataset.pay]=[c.querySelector('[data-amtin]').value,c.querySelector('[data-memo]').value]);
  $('log').innerHTML=r.msgs.length?r.msgs.map(msgHTML).join('')+t:`<div class="empty"><svg width="120" height="80" viewBox="0 0 120 80" aria-hidden="true"><rect x="6" y="10" width="64" height="40" rx="14" fill="var(--bub)"/><rect x="50" y="30" width="64" height="40" rx="14" fill="var(--pri)"/><circle cx="72" cy="50" r="4" fill="#fff"/><circle cx="84" cy="50" r="4" fill="#fff"/><circle cx="96" cy="50" r="4" fill="var(--acc)"/></svg><h3>아직 조용한 방이에요</h3><p><b>전문가 초대</b>로 봇을 데려오거나, <b>텔레그램</b>으로 그룹을 연결하세요.</p></div>`;
  for(const id in keep){const c=document.querySelector(`.paycard[data-pay="${id}"]`);if(c){c.querySelector('[data-amtin]').value=keep[id][0];c.querySelector('[data-memo]').value=keep[id][1]}}
  $('log').scrollTop=$('log').scrollHeight;
@@ -343,6 +348,10 @@ $('input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.is
 $('input').addEventListener('input',e=>{const t=e.target;t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px'});
 $('log').addEventListener('input',e=>{const c=e.target.closest('.paycard');if(c&&e.target.matches('[data-amtin]'))c.querySelectorAll('[data-amt]').forEach(b=>b.setAttribute('aria-pressed','false'))});
 $('log').addEventListener('click',async e=>{
+ const jc=e.target.closest('.joincard');
+ if(jc){const t=e.target.closest('button');if(!t)return;const ok=t.hasAttribute('data-joinok');if(!ok&&!t.hasAttribute('data-joinno'))return;
+  if(!ok&&t.textContent!=='정말 거절할까요?'){t.textContent='정말 거절할까요?';return}
+  t.disabled=true;const j=await api(`/api/rooms/${room().id}/join`,{msgId:jc.dataset.joinmsg,approve:ok});if(j.error){jc.querySelector('[data-err]').textContent=j.error;t.disabled=false}return}
  const card=e.target.closest('.paycard');
  if(card){const t=e.target.closest('button');if(!t)return;const r=room(),inp=card.querySelector('[data-amtin]'),err=card.querySelector('[data-err]');
   if(t.dataset.amt){card.querySelectorAll('[data-amt]').forEach(b=>b.setAttribute('aria-pressed',b===t));inp.value=t.dataset.amt;return}
