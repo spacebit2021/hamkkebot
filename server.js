@@ -18,6 +18,9 @@ const PORT = +process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
 const ANTHROPIC_BASE_URL = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
+// AI 생성은 어댑터(llm.js)를 거침 — LLM_PROVIDER=openai 로 로컬 추론 서버 전환. 웹 검색(VC 찾기)만 Anthropic API 직접 호출
+const LLM = require('./llm').create();
+const AI_READY = LLM.ready();
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
@@ -248,7 +251,7 @@ async function generateDocProposal(org, user) {
     .sort((a, b) => a.at - b.at).slice(-80).map(x => x.t);
   if (!lines.length) return { error: '정리할 대화가 아직 없어요.' };
   let html, note;
-  if (ANTHROPIC_API_KEY) {
+  if (AI_READY) {
     const system = `당신은 한국 사회적기업의 '기업 정보 문서'를 관리하는 함께봇입니다. 현재 문서와 최근 대화를 읽고 문서 전체를 갱신한 HTML 조각을 만드세요.
 규칙:
 - 대화나 현재 문서에 실제로 나온 사실만 적으세요. 추측·과장·지어낸 수치/인증/수상은 금지. 모르는 것은 <mark>[확인 필요: 무엇]</mark>으로 표시.
@@ -277,19 +280,7 @@ function orgText(o) {
   return `기업명: ${o.name}\n소셜미션: ${o.mission || '-'}\n주요 제품·서비스: ${o.product || '-'}\n주요 고객: ${o.target || '-'}\n원하는 말투: ${o.tone || '-'}`;
 }
 // Claude 호출 공통. 실패하면 { error } 를 돌려줌
-async function callClaude(system, user, maxTokens = 2500) {
-  if (!ANTHROPIC_API_KEY) return { error: '서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.' };
-  try {
-    const r = await fetch(`${ANTHROPIC_BASE_URL}/v1/messages`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] })
-    });
-    const j = await r.json();
-    if (!r.ok) { console.error('Claude API 오류', r.status, j); return { error: r.status === 429 ? '요청이 많아 잠시 쉬어야 해요. 1분 뒤 다시 시도해 주세요.' : '답변을 받지 못했어요. 다시 시도해 주세요.' }; }
-    return { text: (j.content || []).filter(c => c.type === 'text').map(c => c.text).join(''), cut: j.stop_reason === 'max_tokens' };
-  } catch (e) { console.error(e); return { error: '답변을 받지 못했어요. 네트워크를 확인해 주세요.' }; }
-}
+async function callClaude(system, user, maxTokens = 2500) { return LLM.generate(system, user, maxTokens); }
 // 봇·전문가 질문에 넣을 기업 정보: 입력한 기본 정보 + 승인된 기업 정보 문서
 function orgContext(org) {
   const cur = org && docCurrent(org);
@@ -297,7 +288,6 @@ function orgContext(org) {
   return `${orgText(org)}${docText ? `\n\n[기업 정보 문서 v${cur.n} — 기업이 승인한 내용]\n${docText}` : ''}`;
 }
 async function askClaude(bot, room, text) {
-  if (!ANTHROPIC_API_KEY) return { error: '서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.' };
   const hist = room.msgs.slice(-14, -1).map(m => {
     const who = m.from === 'me' ? '사용자(웹)' : m.from === 'tg' ? `${m.name}(텔레그램)` : m.from === 'hx' ? `${m.name}(사람 전문가)` : m.from === 'sys' ? null : (BOTS.find(b => b.id === m.from) || {}).name;
     return who ? `${who}: ${m.text.slice(0, 1500)}` : null;
@@ -439,7 +429,7 @@ async function runBot(room, botId, text, ctx = {}) {
   if (sh.block) { addMsg(room, { from: 'sys', text: sh.block }); return; }
   const share = sh.amount, shareLabel = sh.type === 'royalty' ? '원작 기업 몫' : '만든 기업 몫';
   const say = (t, extra = {}) => { addMsg(room, { from: bot.id, text: t, ...extra }); if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${extra.tgText || t}`); };
-  if (!ANTHROPIC_API_KEY) return say('서버에 ANTHROPIC_API_KEY가 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.');
+  if (!AI_READY) return say('서버에 AI 연결이 설정되지 않아 답할 수 없어요. 관리자에게 알려 주세요.');
   if (!reserveTokens(org, cost + share)) {
     addMsg(room, { from: 'sys', text: `${costName}은(는) 요청당 ${cost + share}토큰을 써요${share ? ` (${shareLabel} ${share} 포함)` : ''}. 지금 잔액(${org.wallet}토큰)이 부족해서 요청하지 않았어요. 관리자에게 충전을 요청해 주세요.` });
     if (room.tgChatId) tgSend(room.tgChatId, `${bot.name}: 토큰 잔액이 부족해요 (필요 ${cost + share}, 잔액 ${org.wallet}).`);
@@ -1706,6 +1696,7 @@ async function adminApi(req, res, p, sess) {
   if (p === '/api/admin/logout') { delete S.sessions[sess.token]; save(); return json(res, 200, { ok: true }, { 'set-cookie': cookie('', 0) }); }
   if (p === '/api/admin/state') return json(res, 200, {
     telegram: { enabled: !!tgUsername, username: tgUsername },
+    ai: { ...LLM.info(), search: !!ANTHROPIC_API_KEY },
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
@@ -2020,7 +2011,7 @@ async function userApi(req, res, p, sess) {
     return json(res, 200, {
       me: { loginId: user.loginId, name: user.name }, org: orgPublic(org), wallet: org.wallet,
       rooms: S.rooms.filter(r => r.orgId === org.id), bots: publicBots(org), experts: publicExperts(),
-      telegram: { enabled: !!tgUsername, username: tgUsername }, ai: !!ANTHROPIC_API_KEY,
+      telegram: { enabled: !!tgUsername, username: tgUsername }, ai: AI_READY,
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
       sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null,
@@ -2496,7 +2487,7 @@ async function userApi(req, res, p, sess) {
     }
     if (p === '/api/doc/generate') {
       if (d.versions.some(v => v.status === 'pending' && v.by.kind === 'bot')) return BAD(res, '함께봇 정리안이 이미 기다리고 있어요. 먼저 승인하거나 거절해 주세요.');
-      const cost = ANTHROPIC_API_KEY ? costOf('summary') : 0; // AI 없이 붙이기만 하는 경우는 무료
+      const cost = AI_READY ? costOf('summary') : 0; // AI 없이 붙이기만 하는 경우는 무료
       if (!reserveTokens(org, cost)) return BAD(res, `함께봇 문서 정리는 ${cost}토큰을 써요. 잔액(${org.wallet}토큰)이 부족해요.`);
       const r = await generateDocProposal(org, user);
       if (r.error) { refundTokens(org, cost); return BAD(res, r.error); }
@@ -2843,7 +2834,7 @@ http.createServer(async (req, res) => {
   });
 }).listen(PORT, () => {
   console.log(`함께봇: http://localhost:${PORT}  ·  관리자: http://localhost:${PORT}/admin`);
-  if (!ANTHROPIC_API_KEY) console.log('경고: ANTHROPIC_API_KEY가 없어 봇이 답하지 못합니다.');
+  { const ai = LLM.info(); console.log(`AI 생성: ${ai.label} · 모델 ${ai.model || '-'}${ai.baseUrl ? ' · ' + ai.baseUrl : ''}`); if (!ai.ready) console.log(`경고: ${ai.missing}이(가) 없어 봇이 답하지 못합니다.`); if (!ANTHROPIC_API_KEY) console.log('참고: ANTHROPIC_API_KEY가 없어 웹 검색(IR 봇 VC 찾기)은 쓸 수 없습니다.'); }
   if (!ADMIN_PASSWORD) console.log('경고: ADMIN_PASSWORD가 없어 관리자 페이지에 들어갈 수 없습니다. 기업 계정을 만들려면 꼭 설정하세요.');
   if (TG_TOKEN) pollTelegram(); else console.log('텔레그램: TELEGRAM_BOT_TOKEN이 없어 중계를 끕니다.');
 });

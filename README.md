@@ -41,7 +41,7 @@
 
 Node.js 18 이상이 필요합니다. PPT 기능용 패키지 2개(`pptxgenjs`, `jszip`)를 쓰므로 처음 한 번 `npm ci`를 실행하세요.
 
-1. **Claude API 키 발급**: https://console.anthropic.com
+1. **Claude API 키 발급**: https://console.anthropic.com (로컬 LLM만 쓸 때는 선택 — 아래 「AI 생성 연결」)
 2. **텔레그램 봇 만들기**: 텔레그램에서 `@BotFather`에게
    - `/newbot` → 이름 정하기 → 토큰 받기
    - `/setprivacy` → 만든 봇 선택 → `Disable` (그룹의 일반 대화를 웹앱으로 옮겨오려면 필요)
@@ -430,6 +430,32 @@ HB_API=https://함께봇주소 HB_KEY=hbk_… HB_SECRET=… PORTAL_ADMIN_PASSWOR
 6. **토큰 나눔**: 다른 기업이 쓰면 기본 봇 비용은 운영 기관에, 요청당 몫은 만든 기업 지갑으로 갑니다. 이용권 기간에는 요청당 몫이 없습니다. AI 실패 시 이용 기업에 모두 돌려주고 만든 기업 몫도 생기지 않습니다. 거래 기록에 보냄·받음이 남습니다.
 7. **보안**: 링크 읽기는 http/https 공개 주소만, 내부망·메타데이터 주소와 그쪽으로 가는 리다이렉트를 막고, 300KB·8초로 제한합니다.
 
+## AI 생성 연결 (Claude API ↔ 로컬 LLM)
+
+봇 답변·기업 정보 문서·IR 초안·일정·할 일 점검·보고 PPT 내용 등 **생성**은 모두 `llm.js` 어댑터를 거칩니다. 환경변수만 바꾸면 로컬 추론 서버로 옮길 수 있습니다. **웹 검색(IR 봇의 VC 찾기)만은 Claude API를 그대로** 씁니다 — 로컬 모델은 실시간 웹 검색을 대신하지 못하기 때문입니다.
+
+| 변수 | 값 |
+|---|---|
+| `LLM_PROVIDER` | `anthropic`(기본, Claude API) 또는 `openai`(OpenAI 호환 Chat Completions — vLLM·Ollama·llama.cpp server·LM Studio 등) |
+| `LLM_BASE_URL` | `openai`일 때 추론 서버 주소. 예: `http://gpu-server:8000` (끝의 `/v1`은 있어도 됨) |
+| `LLM_MODEL` | `openai`일 때 추론 서버의 모델 이름 (`anthropic`이면 생략 시 `CLAUDE_MODEL`) |
+| `LLM_API_KEY` | 추론 서버가 키를 요구할 때만 (`Authorization: Bearer`) |
+| `LLM_TIMEOUT_MS` | 응답 대기 한도, 기본 180000 |
+| `ANTHROPIC_API_KEY` | `anthropic` 생성과, 어느 경우든 웹 검색에 사용. 로컬 모드에서 비우면 VC 찾기만 쓸 수 없음 |
+
+로컬 모드 예:
+```
+LLM_PROVIDER=openai
+LLM_BASE_URL=http://gpu-server:8000
+LLM_MODEL=<추론 서버에 올린 모델 이름>
+ANTHROPIC_API_KEY=sk-ant-...   # VC 찾기(웹 검색)용, 선택
+```
+
+- 추론형 모델이 내보내는 `<think>…</think>` 생각 과정은 답에서 뺍니다.
+- 추론 서버 오류·시간 초과면 기존처럼 안내하고 토큰을 환불합니다.
+- 관리자 화면 「AI 봇 토큰 사용량」 위에 현재 연결(종류·모델·추론 서버 주소)과 웹 검색 가능 여부가 보입니다. 서버 시작 로그에도 찍힙니다.
+- 로컬 모델은 JSON 출력(IR·보고 PPT 구조)과 한국어 품질이 모델마다 다릅니다. 전환 전에 같은 요청으로 품질을 비교하세요. 모델·GPU 사양은 정해 두지 않았습니다.
+
 ## 시험 (`npm test`)
 
 `tests/`의 시험은 가짜 텔레그램·Claude 응답으로 서버 흐름을 확인합니다. 실제 API를 호출하지 않고, 임시 파일에 데이터를 써서 `data.json`을 건드리지 않습니다.
@@ -447,6 +473,7 @@ HB_API=https://함께봇주소 HB_KEY=hbk_… HB_SECRET=… PORTAL_ADMIN_PASSWOR
 - `mkt-doc` — 마케팅 봇이 승인된 문서만 문맥으로 쓰는지 (저장 → 전문가 수정안 대기 → 승인 → 되돌리기). `VERBOSE=1 node tests/mkt-doc.test.js`로 봇이 받은 기업 정보를 직접 볼 수 있음
 - `doc` — HTML 정리기 공격 사례, 문서 저장·충돌·되돌리기·다운로드, 함께봇 정리안, 전문가 `/info`·`/ask`·파일 올리기, 승인·거절, 상담 종료 후 차단
 - `migration` — 이전 버전 데이터 옮기기, 실시간 알림 분리
+- `llm` — 로컬 LLM 모드: 생성은 OpenAI 호환 추론 서버로(모델 이름·메시지 형식·인증 헤더), 생각 과정 제거, 추론 서버 오류 시 환불, IR 초안 JSON도 로컬, VC 웹 검색만 Claude API, 관리자 화면 연결 표시
 
 ## 보안
 

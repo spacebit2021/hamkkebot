@@ -103,6 +103,7 @@ td{border-bottom:1px solid var(--line);padding:10px 6px;vertical-align:middle}
 
  <h2>AI 봇 토큰 사용량</h2>
  <p class="lead" style="margin:-6px 0 14px">요청 한 번에 기업 잔액에서 빠지는 토큰이에요. 0이면 무료. 답을 받지 못하면 빠지지 않아요. 바꾸면 다음 요청부터 적용돼요.</p>
+ <div class="card" id="aiBox" style="margin-bottom:12px"></div>
  <div class="card" id="feeBox" style="margin-bottom:12px"></div>
  <form class="form" id="costForm"><div id="costs" style="display:contents"></div><div><button class="btn">사용량 저장</button></div><div class="msg" id="costMsg" style="grid-column:1/-1"></div></form>
 
@@ -166,7 +167,7 @@ async function load(){
  $('sExpert').textContent=n(D.experts.reduce((a,x)=>a+x.balance,0));
  $('sCount').textContent=`${D.orgs.length} · ${D.experts.length} · ${D.orgs.filter(o=>o.unlimited&&o.unlimited.active).length}`;
  $('tgNote').textContent=D.telegram.enabled?`전문가는 텔레그램에서 @${D.telegram.username} 봇에게 등록코드를 보내 등록하고, /login 으로 프로필 페이지(/expert)에 들어가 시간당 토큰을 직접 정합니다. 단가를 정해야 기업 목록에 보입니다.`:'텔레그램 봇 토큰이 설정되지 않아 사람 전문가를 쓸 수 없어요.';
- renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderClaims();renderCopies();renderBoard();renderTg();renderTalents();renderFee();renderChain();
+ renderOrgs();renderExperts();renderLedger();renderCosts();renderMarket();renderClaims();renderCopies();renderBoard();renderTg();renderTalents();renderFee();renderChain();renderAi();
 }
 const dstr=t=>new Date(t).toLocaleDateString('ko-KR',{month:'numeric',day:'numeric'});
 const tomorrow=()=>{const d=new Date(Date.now()+864e5+9*36e5);return d.toISOString().slice(0,10)};
@@ -200,6 +201,9 @@ function renderOrgs(){
 const MS={pending:'심사 대기',public:'공개 중',rejected:'거절됨'};
 let BF='wait';
 const wt=t=>new Date(t+9*36e5).toISOString().slice(5,16).replace('T',' ');
+function renderAi(){const A=D.ai;if(!A)return;$('aiBox').innerHTML=`<div class="head"><h3>AI 생성 연결 · ${esc(A.label)}</h3><span class="msg">${A.ready?'연결 설정됨':'설정 필요: '+esc(A.missing||'')}</span></div>
+ <div class="msg">모델 <b>${esc(A.model||'-')}</b>${A.baseUrl?` · 추론 서버 ${esc(A.baseUrl)}`:''}. 바꾸려면 서버 환경변수 LLM_PROVIDER(anthropic/openai)·LLM_BASE_URL·LLM_MODEL을 고치고 다시 시작하세요.</div>
+ <div class="msg">웹 검색(IR 봇 VC 찾기): ${A.search?'Claude API 사용':'ANTHROPIC_API_KEY 없음 — 사용 불가'}</div>`}
 function renderChain(){const C=D.chain;if(!C)return;if(document.activeElement&&document.activeElement.closest('#chainBox'))return;
  $('chainBox').innerHTML=`<div class="head"><h3>${esc(C.chain)} · ${esc(C.token.symbol)}</h3><span class="msg">어댑터 ${esc(C.adapter)} · 블록 ${C.blockNumber}</span></div>
  <div class="msg"><b>운영 기관 지갑</b> <code>${esc(C.treasury.address)}</code> · 잔액 ${C.treasury.wallet.toLocaleString()} · 출금 가능 ${C.treasury.exchangeable.toLocaleString()} (운영 기관 몫 + 봇 사용료, 무제한 토큰으로 쓴 사용료 제외) — 출금은 충전·환전 페이지 운영자 화면에서</div>
