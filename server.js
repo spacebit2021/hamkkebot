@@ -32,6 +32,10 @@ const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
 const CHARGE_PORTAL_URL = (process.env.CHARGE_PORTAL_URL || '').replace(/\/$/, ''); // 원격 충전·환전 페이지 주소
 const CHAIN = require('./chain');
+const ATT = require('./attend');
+// 실제 접속 IP: 기본은 소켓 주소. 리버스 프록시 뒤면 TRUST_PROXY=프록시 수(보통 1) → 프록시가 덧붙인 X-Forwarded-For 뒤쪽 값 (맨 앞 값은 사용자가 꾸밀 수 있어 믿지 않음)
+const TRUST_PROXY = Math.max(0, Math.min(5, +process.env.TRUST_PROXY || 0));
+const clientIp = req => { const sock = ATT.normIp(req.socket.remoteAddress); if (!TRUST_PROXY) return sock; const xs = String(req.headers['x-forwarded-for'] || '').split(',').map(x => x.trim()).filter(Boolean); return ATT.normIp(xs[xs.length - TRUST_PROXY] || sock); };
 const SESSION_DAYS = 14;
 const BOTS = require('./bots');
 const DOC = require('./doc');
@@ -442,6 +446,7 @@ async function runBotInner(room, botId, text, ctx = {}) {
   const bot = botById(botId);
   if (!bot) return;
   const org = orgById(room.orgId);
+  if (bot.kind === 'attend') return attendFromRoom(room, org, bot, text, ctx); // AI·토큰을 쓰지 않음
   if (!canUseBot(org, bot.id)) { addMsg(room, { from: 'sys', text: `${bot.name}은(는) 지금 쓸 수 없는 봇이에요 (공개가 중단됐거나 승인 전이에요).` }); return; }
   // 봇 종류·요청에 따라 실행할 일과 토큰 항목을 정함 (직접 만든 봇은 종류별 기본 항목을 따름)
   let costId = bot.custom ? (bot.kind === 'site' ? 'site' : 'custom') : bot.id, run;
@@ -1276,6 +1281,7 @@ ${BOTS.filter(b => !b.soon).map(b => `/${b.id} 요청내용 — ${b.name}에게 
 @${tgUsername} 요청내용 — 이 방의 기본 봇에게 요청
 봇의 메시지에 답장해도 대화가 이어집니다.
 메시지에 답장으로 /kb 제목 — 그 내용을 기업 지식베이스에 저장
+/in · /out (또는 "출근"·"퇴근") — 출퇴근 봇이 1:1 대화로 확인 링크를 보내요 (사무실 네트워크에서 열어야 기록)
 연결코드는 웹앱 채팅방의 "텔레그램" 버튼에서 받을 수 있어요.`;
 
 async function handleTelegram(msg) {
@@ -1353,6 +1359,7 @@ async function handleTelegram(msg) {
 
   const mention = tgUsername && new RegExp('@' + tgUsername + '\\b', 'i');
   const replyToBot = msg.reply_to_message && msg.reply_to_message.from && msg.reply_to_message.from.username === tgUsername;
+  if ((cmd === 'in' || cmd === 'out') && room) return runBot(room, 'attend', cmd === 'in' ? '출근' : '퇴근', { author: name, tgUid, source: 'telegram', chatId: chat.id });
   if (cmd === 'kb') {
     if (!room) return tgSend(chat.id, '이 대화는 아직 웹앱 채팅방과 연결되지 않았어요.');
     const src = msg.reply_to_message && (msg.reply_to_message.text || msg.reply_to_message.caption || '');
@@ -1377,6 +1384,7 @@ async function handleTelegram(msg) {
   forwardToExperts(room, `${name}: ${text}`);
   // 일정 봇이 있는 방: 일정 이야기로 보이는 메시지는 명령 없이도 알아서 반영 (아니면 조용히 넘어감)
   // 할 일 봇이 있는 방: 할 일로 보이는 말은 보낸 사람의 할 일로 반영 (일정 봇도 있으면 "할 일·todo"라고 쓴 것만)
+  if (!botId && room.bots.includes('attend') && ATT.actionOf(text)) return runBot(room, 'attend', text, { author: name, tgUid, source: 'telegram', chatId: chat.id });
   const todoWord = /할\s*일|할일|todo|투두/i.test(text);
   if (!botId && room.bots.includes('todo') && TODO.TODO_RE.test(text) && (todoWord || !room.bots.includes('sched'))) return runBot(room, 'todo', text, { author: name, tgUid, source: 'telegram', silent: true });
   if (!botId && room.bots.includes('sched') && SCHED.SCHED_RE.test(text)) return runBot(room, 'sched', text, { author: name, tgUid, source: 'telegram', silent: true });
@@ -1734,7 +1742,7 @@ const publicBots = org => [
 const publicExperts = () => S.experts.filter(e => e.tgChatId && e.rate).map(e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, color: e.color, linked: true }));
 const expertProfile = e => ({ id: e.id, name: e.name, field: e.field, desc: e.desc, career: e.career, hours: e.hours, rate: e.rate, available: e.available, balance: e.balance });
 const orgPublic = o => ({ id: o.id, name: o.name, mission: o.mission, product: o.product, target: o.target, tone: o.tone });
-const ipOf = req => (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress;
+const ipOf = clientIp; // 로그인 시도 제한도 같은 기준 (꾸민 X-Forwarded-For로 제한을 피하지 못하게)
 const BAD = (res, error, code = 400) => json(res, code, { error });
 
 // ---------- 관리자 API ----------
@@ -1755,7 +1763,7 @@ async function adminApi(req, res, p, sess) {
     ai: { ...LLM.info(), search: SEARCH_READY, searchVia: SEARCH.info() },
     backup: { ...backupSummary(), history: S.backups.slice(-10).reverse(), snapshots: KB.list().slice(0, 30), running: !!backupRunning },
     usageMonth: (() => { const k = KBM.kst(), m0 = Date.parse(`${k.y}-${k.m}-01T00:00:00+09:00`), o = {}; for (const e of S.usage) if (e.type === 'llm' && e.at >= m0) { const x = o[e.orgId || '-'] || (o[e.orgId || '-'] = { calls: 0, in: 0, out: 0, est: false }); x.calls++; x.in += e.in; x.out += e.out; if (e.est) x.est = true; } return o; })(),
-    orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
+    orgs: S.orgs.map(o => ({ ...orgPublic(o), att: o.att ? { ips: o.att.ips || [], memo: o.att.memo || '', updatedAt: o.att.updatedAt, today: (o.att.records || []).filter(r => r.date === ATT.dayK(Date.now())).length } : null, wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
     chain: { ...ledger.info(), supply: ledger.supply(), treasury: { address: ledger.addressOf('platform'), wallet: S.platform.wallet, exchangeable: Math.max(0, Math.min(S.platform.exchangeable || 0, S.platform.wallet)) }, portalUrl: CHARGE_PORTAL_URL, clients: S.apiClients.map(c => ({ id: c.id, name: c.name, keyId: c.keyId, scopes: c.scopes, mintLimit: c.mintLimit, createdAt: c.createdAt, revokedAt: c.revokedAt, lastUsedAt: c.lastUsedAt })), txs: S.chain.txs.slice(-50).reverse().map(t => ({ ...ledger.getTx(t.hash), orgName: acctLabel(t.address), fromName: t.from ? acctLabel(t.from) : '', clientName: (S.apiClients.find(c => c.id === t.clientId) || {}).name })) },
@@ -1791,7 +1799,7 @@ async function adminApi(req, res, p, sess) {
     save(); emit('room', {}, org.id);
     return json(res, 200, { ok: true, orgId: org.id });
   }
-  let m = p.match(/^\/api\/admin\/orgs\/(\w+)\/(users|charge|deduct|rename|delete|unpublish|unlimited|unlimited-off)$/);
+  let m = p.match(/^\/api\/admin\/orgs\/(\w+)\/(users|charge|deduct|rename|delete|unpublish|unlimited|unlimited-off|att)$/);
   if (m) {
     const org = orgById(m[1]); if (!org) return BAD(res, '없는 기업이에요', 404);
     if (m[2] === 'unlimited') {
@@ -1812,6 +1820,15 @@ async function adminApi(req, res, p, sess) {
       if (!org.unlimited) return BAD(res, '무제한 설정이 없어요');
       org.unlimited.until = Math.min(org.unlimited.until, Date.now() - 1); org.unlimited.endedEarly = true; save();
       return json(res, 200, { ok: true });
+    }
+    if (m[2] === 'att') { // 출퇴근을 인정할 사무실 IP·대역
+      const r = ATT.parseIps(b.ips);
+      if (r.errors.length) return BAD(res, `IP 형식을 확인해 주세요: ${r.errors.slice(0, 5).join(', ')}`);
+      org.att = org.att || { records: [], denied: [] };
+      Object.assign(org.att, { ips: r.list, memo: str(b.memo, 100), updatedAt: Date.now(), updatedBy: '운영 기관' });
+      KB.append(org.id, 'att', { at: Date.now(), op: 'ips', ips: r.list, memo: org.att.memo });
+      save(); emit('att', {}, org.id);
+      return json(res, 200, { ok: true, ips: r.list });
     }
     if (m[2] === 'unpublish') { if (!org.site || !org.site.published) return BAD(res, '게시된 페이지가 없어요'); org.site.published = null; save(); emit('room', {}, org.id); return json(res, 200, { ok: true }); }
     if (m[2] === 'users') {
@@ -2076,7 +2093,7 @@ async function userApi(req, res, p, sess) {
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
       sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null,
       feePct: feePct(), exchangeable: Math.max(0, Math.min(org.exchangeable || 0, org.wallet)), address: ledger.addressOf(org.id), portal: !!CHARGE_PORTAL_URL,
-      boardTabs: boardTabs(org), kbCount: ensureKb(org).items.filter(x => !x.deleted).length, members: S.users.filter(u => u.orgId === org.id).length,
+      boardTabs: boardTabs(org), att: org.att && org.att.ips && org.att.ips.length ? { configured: true, here: ATT.matcher(org.att.ips)(clientIp(req)) } : S.rooms.some(r => r.orgId === org.id && r.bots.includes('attend')) ? { configured: false, here: false } : null, kbCount: ensureKb(org).items.filter(x => !x.deleted).length, members: S.users.filter(u => u.orgId === org.id).length,
       talentTab: hasBot(org, 'talent') || S.talents.some(t => (t.orgId === org.id && t.status !== 'draft') || t.picks.some(x => x.orgId === org.id)),
       boardUnread: S.posts.filter(x => x.orgId === org.id && x.unreadAnswer).length,
       todo: org.todo || todoRooms(org).length ? (() => { const td = ensureTodo(org), t = todayKst(), nx = TODO.upcoming(td, t); return { url: todoUrl(org), editUrl: todoEditUrl(org), v: td.v, next: nx, left: SCHED.diffDays(t, nx), days: td.cycle.days, count: td.items.filter(x => x.status === 'active').length }; })() : null
@@ -2201,6 +2218,26 @@ async function userApi(req, res, p, sess) {
     if (S.posts.filter(x => x.quick && x.orgId === org.id && Date.now() - x.at < 36e5).length >= 10) return BAD(res, '한 시간에 10개까지 물을 수 있어요');
     const x = await askAdmin(org, user, text, b.secret);
     return json(res, 200, { ok: true, id: x.id, n: x.quick, sent: !!x.tgMsgId });
+  }
+  // ----- 출퇴근 -----
+  if (p === '/api/att' || p === '/api/att.csv') {
+    const qs = new URL(req.url, 'http://x').searchParams, ip = clientIp(req), att = org.att || {};
+    const month = /^\d{4}-\d{2}$/.test(qs.get('month') || '') ? qs.get('month') : ATT.dayK(Date.now()).slice(0, 7);
+    if (req.method === 'POST') {
+      const b = await body(req);
+      if (b.action !== 'in' && b.action !== 'out') return BAD(res, '출근 또는 퇴근을 골라 주세요');
+      const r = attendDo(org, { key: 'u:' + user.id, name: user.name, kind: 'web' }, b.action, ip, 'web');
+      return r.ok ? json(res, 200, { ok: true, msg: r.msg, already: !!r.already }) : BAD(res, r.msg, r.code === 'ip' ? 403 : 400);
+    }
+    if (p === '/api/att.csv') {
+      res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${org.name}_출퇴근_${month}.csv`)}` });
+      return res.end(ATT.csv(att, month));
+    }
+    const people = S.users.filter(u => u.orgId === org.id).map(u => ({ key: 'u:' + u.id, name: u.name, kind: 'web' }));
+    const today = ATT.dayK(Date.now()), rep = ATT.monthReport(att, month, people);
+    const todayList = [...people, ...rep.people.filter(x => !people.some(p => p.key === x.key))].map(pp => { const r = (att.records || []).find(x => x.key === pp.key && x.date === today); return { key: pp.key, name: pp.name, kind: pp.kind, in: r ? r.in.at : null, out: r && r.out ? r.out.at : null }; });
+    return json(res, 200, { configured: !!(att.ips && att.ips.length), here: !!(att.ips && att.ips.length) && ATT.matcher(att.ips)(ip), myIp: ip, memo: att.memo || '', me: todayList.find(x => x.key === 'u:' + user.id), today: todayList, report: rep,
+      denied: (att.denied || []).slice(-30).reverse().map(d => ({ at: d.at, name: d.name, action: d.action, ip: d.ip, via: d.via })) });
   }
   // ----- 구성원별 AI 사용량 -----
   if (p === '/api/usage' || p === '/api/usage.csv') {
@@ -2740,6 +2777,7 @@ async function userApi(req, res, p, sess) {
     addMsg(room, { from: 'me', text, to: b.to || null, by: user.name, uid: user.id });
     if (room.tgChatId) tgSend(room.tgChatId, `[웹앱] ${text}`);
     forwardToExperts(room, text);
+    if (b.to === 'attend' && room.bots.includes('attend')) { await attendFromRoom(room, org, botById('attend'), text, { author: user.name, uid: user.id, source: 'web', ip: clientIp(req) }); return json(res, 200, { ok: true }); }
     if (b.to && room.bots.includes(b.to)) runBot(room, b.to, text, { author: user.name, uid: user.id, source: 'web' });
     return json(res, 200, { ok: true });
   }
@@ -2895,7 +2933,72 @@ function kbExport(org, format) {
   return JSON.stringify({ format: 'hamkkebot-kb/1', exportedAt: Date.now(), org: orgPublic(org),
     doc: org.doc ? org.doc.versions.map(v => ({ n: v.n, at: v.at, by: v.by, note: v.note, status: v.status, html: v.html })) : [],
     kb: kb.items.map(it => ({ ...kbView(it), history: it.history })),
-    messages: KB.read(org.id, 'msgs'), usage: KB.read(org.id, 'usage') }, null, 1);
+    messages: KB.read(org.id, 'msgs'), usage: KB.read(org.id, 'usage'), attendance: KB.read(org.id, 'att') }, null, 1);
+}
+
+// ---------- 출퇴근 봇 ----------
+// 기록·거부 모두 영구 기록(archive/<기업>/att-*.jsonl)에도 남김
+function attendDo(org, who, action, ip, via) {
+  org.att = org.att || { ips: [], records: [], denied: [] };
+  const r = ATT.act(org.att, who, action, ip, via);
+  if (r.code !== 'unset') KB.append(org.id, 'att', { at: Date.now(), op: r.ok ? action : 'denied', action, key: who.key, name: who.name, ip: ATT.normIp(ip), via, ok: r.ok, already: !!r.already, rec: r.rec ? ATT.view(r.rec) : undefined });
+  save(); emit('att', {}, org.id);
+  return r;
+}
+if (!S.attLinks) S.attLinks = {}; // 텔레그램용 일회성 확인 링크 { token: { orgId, roomId, key, name, action, exp } }
+const ATT_LINK_MIN = 10;
+async function attendFromRoom(room, org, bot, text, ctx) {
+  const say = t => { addMsg(room, { from: bot.id, text: t }); if (room.tgChatId && ctx.source !== 'telegram') tgSend(room.tgChatId, `[${bot.name}]\n${t}`); };
+  const sayTg = t => { if (room.tgChatId) tgSend(room.tgChatId, `[${bot.name}]\n${t}`); addMsg(room, { from: bot.id, text: t }); };
+  const action = ATT.actionOf(text);
+  if (!action) {
+    if (/현황|누가|오늘/.test(text || '')) {
+      const today = ATT.dayK(Date.now()), recs = ((org.att || {}).records || []).filter(r => r.date === today);
+      const t = recs.length ? `오늘 출퇴근 (${today})\n` + recs.map(r => `- ${r.name}: 출근 ${ATT.hm(r.in.at)}${r.out ? ` · 퇴근 ${ATT.hm(r.out.at)}` : ''}`).join('\n') : '오늘은 아직 출근 기록이 없어요.';
+      return ctx.source === 'telegram' ? sayTg(t) : say(t);
+    }
+    const t = '"출근" 또는 "퇴근"이라고 보내 주세요. 운영 기관이 정한 사무실 네트워크(IP)에서 보낸 것만 기록해요. 텔레그램에서는 1:1 대화로 확인 링크를 보내 드려요.';
+    return ctx.source === 'telegram' ? sayTg(t) : say(t);
+  }
+  if (ctx.source !== 'telegram') { // 웹앱: 이 요청의 접속 IP로 바로 확인
+    const r = attendDo(org, { key: 'u:' + ctx.uid, name: ctx.author, kind: 'web' }, action, ctx.ip, 'web');
+    return say(r.msg);
+  }
+  // 텔레그램은 접속 IP를 알 수 없음 → 본인에게만 1:1로 링크를 보내고, 사무실 네트워크에서 그 링크를 열어 누르게 함
+  if (!org.att || !org.att.ips || !org.att.ips.length) return sayTg('운영 기관이 아직 이 기업의 출퇴근 IP를 정하지 않았어요.');
+  const token = crypto.randomBytes(16).toString('hex');
+  for (const k in S.attLinks) if (S.attLinks[k].exp < Date.now()) delete S.attLinks[k];
+  S.attLinks[token] = { orgId: org.id, roomId: room.id, key: 't:' + ctx.tgUid, name: ctx.author, action, exp: Date.now() + ATT_LINK_MIN * 6e4 };
+  save();
+  const url = `${PUBLIC_URL ? PUBLIC_URL.replace(/\/$/, '') : ''}/a/${token}`;
+  const dm = await tg('sendMessage', { chat_id: ctx.tgUid, text: `${ctx.author}님 ${action === 'in' ? '출근' : '퇴근'} 확인 링크예요 (${ATT_LINK_MIN}분 동안, 본인만).\n사무실 와이파이·유선에 연결한 휴대폰·PC에서 열고 버튼을 눌러 주세요.\n${url}`, disable_web_page_preview: true });
+  if (dm && dm.ok) { if (ctx.chatId !== ctx.tgUid) tgSend(ctx.chatId || room.tgChatId, `${ctx.author}님, 1:1 대화로 ${action === 'in' ? '출근' : '퇴근'} 확인 링크를 보냈어요.`); return; }
+  delete S.attLinks[token]; save();
+  return tgSend(ctx.chatId || room.tgChatId, `${ctx.author}님에게 1:1 메시지를 보낼 수 없어요. 먼저 @${tgUsername} 와(과) 1:1 대화를 열고 /start 를 보낸 뒤, 다시 "${action === 'in' ? '출근' : '퇴근'}"이라고 보내 주세요.`);
+}
+function attLinkPage(l, msg, done) {
+  const e = DOC.escapeHtml, o = orgById(l.orgId), word = l.action === 'in' ? '출근' : '퇴근';
+  return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${word} 확인 · 함께봇</title>
+<style>body{margin:0;font:17px/1.6 "Malgun Gothic","Noto Sans KR",system-ui,sans-serif;color:#17202b;background:#f3f6f6}main{max-width:480px;margin:0 auto;padding:32px 18px}h1{font-size:22px;margin:0 0 8px}.card{background:#fff;border:1.5px solid #d5e3e1;border-radius:16px;padding:18px}.mute{color:#5b6670;font-size:14px}button{font:inherit;font-weight:700;width:100%;min-height:56px;border:0;border-radius:14px;background:#0f766e;color:#fff;margin-top:14px;cursor:pointer}.ok{background:#ecfdf3;border-radius:12px;padding:12px 14px}.no{background:#fef3f2;border-radius:12px;padding:12px 14px}</style></head><body><main><div class="card">
+<h1>${e(l.name)}님 ${word} 확인</h1><p class="mute">${e(o ? o.name : '')} · 운영 기관이 정한 사무실 네트워크에서 연 경우에만 기록돼요.</p>
+${msg ? `<p class="${done ? 'ok' : 'no'}">${e(msg)}</p>` : ''}${done ? '' : `<form method="post"><button name="go" value="1">${word} 기록하기</button></form>`}
+</div></main></body></html>`;
+}
+async function handleAttLink(req, res, token) {
+  const l = S.attLinks[token];
+  if (!l || l.exp < Date.now()) { res.writeHead(404, CONSENT_HEADERS); return res.end('<!DOCTYPE html><meta charset="utf-8"><title>없는 링크</title><p style="font-family:sans-serif;padding:40px">없거나 시간이 지난 링크예요. 텔레그램에서 다시 "출근"·"퇴근"을 보내 주세요.</p>'); }
+  if (req.method !== 'POST') { res.writeHead(200, CONSENT_HEADERS); return res.end(attLinkPage(l)); } // 미리보기 수집기가 열어도 기록되지 않도록 버튼(POST)으로만
+  await new Promise(ok => { let d = ''; req.on('data', c => { d += c; if (d.length > 1e3) req.destroy(); }); req.on('end', ok); });
+  const org = orgById(l.orgId);
+  if (!org) { delete S.attLinks[token]; save(); res.writeHead(404, CONSENT_HEADERS); return res.end('없는 기업이에요'); }
+  const r = attendDo(org, { key: l.key, name: l.name, kind: 'telegram' }, l.action, clientIp(req), 'telegram-link');
+  if (r.ok) {
+    delete S.attLinks[token]; save();
+    const room = S.rooms.find(x => x.id === l.roomId);
+    if (room && !r.already) { addMsg(room, { from: 'attend', text: r.msg }); if (room.tgChatId) tgSend(room.tgChatId, `[출퇴근 봇]\n${r.msg}`); }
+  }
+  res.writeHead(r.ok ? 200 : 403, CONSENT_HEADERS);
+  return res.end(attLinkPage(l, r.msg, r.ok));
 }
 
 // ---------- 토큰 API (블록체인과 같은 인터페이스) ----------
@@ -3066,6 +3169,9 @@ http.createServer(async (req, res) => {
     res.writeHead(200, { ...SITE_HEADERS, 'cache-control': 'no-store', 'x-robots-tag': 'noindex' });
     return res.end(SCHED.renderGantt(org, org.sched));
   }
+  // 출퇴근 확인 링크 (텔레그램용, 일회성)
+  const am = p.match(/^\/a\/([a-f0-9]{32})\/?$/);
+  if (am) return handleAttLink(req, res, am[1]);
   // 인재 본인 동의 페이지
   const cn = p.match(/^\/c\/([a-f0-9]{32})\/?$/);
   if (cn) return handleConsent(req, res, cn[1]);
