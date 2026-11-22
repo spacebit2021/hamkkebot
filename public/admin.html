@@ -203,7 +203,7 @@ let BF='wait';
 const wt=t=>new Date(t+9*36e5).toISOString().slice(5,16).replace('T',' ');
 function renderAi(){const A=D.ai;if(!A)return;$('aiBox').innerHTML=`<div class="head"><h3>AI 생성 연결 · ${esc(A.label)}</h3><span class="msg">${A.ready?'연결 설정됨':'설정 필요: '+esc(A.missing||'')}</span></div>
  <div class="msg">모델 <b>${esc(A.model||'-')}</b>${A.baseUrl?` · 추론 서버 ${esc(A.baseUrl)}`:''}. 바꾸려면 서버 환경변수 LLM_PROVIDER(anthropic/openai)·LLM_BASE_URL·LLM_MODEL을 고치고 다시 시작하세요.</div>
- <div class="msg">웹 검색(IR 봇 VC 찾기): ${A.search?'Claude API 사용':'ANTHROPIC_API_KEY 없음 — 사용 불가'}</div>`}
+ <div class="msg">웹 검색(IR 봇 VC 찾기): <b>${esc((A.searchVia&&A.searchVia.label)||'Claude API web_search')}</b> — ${A.search?'사용 가능':'설정 필요: '+esc((A.searchVia&&A.searchVia.missing)||'ANTHROPIC_API_KEY')}${A.searchVia&&A.searchVia.engine!=='claude'?` · 본문 확인 상위 ${A.searchVia.fetchPages}곳. SEARCH_ENGINE을 비우면 Claude API 검색으로 돌아가요.`:'. 로컬 LLM으로 검색하려면 SEARCH_ENGINE(searxng/brave)을 설정하세요.'}</div>`}
 function renderChain(){const C=D.chain;if(!C)return;if(document.activeElement&&document.activeElement.closest('#chainBox'))return;
  $('chainBox').innerHTML=`<div class="head"><h3>${esc(C.chain)} · ${esc(C.token.symbol)}</h3><span class="msg">어댑터 ${esc(C.adapter)} · 블록 ${C.blockNumber}</span></div>
  <div class="msg"><b>운영 기관 지갑</b> <code>${esc(C.treasury.address)}</code> · 잔액 ${C.treasury.wallet.toLocaleString()} · 출금 가능 ${C.treasury.exchangeable.toLocaleString()} (운영 기관 몫 + 봇 사용료, 무제한 토큰으로 쓴 사용료 제외) — 출금은 충전·환전 페이지 운영자 화면에서</div>

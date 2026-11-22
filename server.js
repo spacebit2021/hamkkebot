@@ -21,6 +21,9 @@ const ANTHROPIC_BASE_URL = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthr
 // AI 생성은 어댑터(llm.js)를 거침 — LLM_PROVIDER=openai 로 로컬 추론 서버 전환. 웹 검색(VC 찾기)만 Anthropic API 직접 호출
 const LLM = require('./llm').create();
 const AI_READY = LLM.ready();
+// 웹 검색: SEARCH_ENGINE을 정하면 브릿지(서버가 검색 → AI 생성이 결과로 답함, 로컬 LLM 가능), 비우면 Claude API web_search
+const SEARCH = require('./search').create();
+const SEARCH_READY = SEARCH.enabled ? SEARCH.ready() : !!ANTHROPIC_API_KEY;
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
@@ -809,6 +812,11 @@ async function callClaudeSearch(system, user, maxTokens = 4000) {
   } catch (e) { console.error(e); return { error: '검색 중 네트워크 오류가 났어요.' }; }
   return { text, urls };
 }
+// 검색이 필요한 호출의 단일 입구 — 반환 { text, urls } 또는 { error }
+async function webSearch(system, user, maxTokens = 4000) {
+  if (SEARCH.enabled) return SEARCH.search(LLM.generate, system, user, maxTokens);
+  return callClaudeSearch(system, user, maxTokens);
+}
 const sameSource = (a, urls) => { if (!/^https?:\/\//.test(a || '')) return false; const n = u => u.replace(/[#?].*$/, '').replace(/\/$/, ''); return [...urls].some(u => n(u) === n(a) || n(a).startsWith(n(u)) || n(u).startsWith(n(a))); };
 async function runVcSearch(bot, org, text) {
   const ir = ensureIr(org);
@@ -820,7 +828,7 @@ async function runVcSearch(bot, org, text) {
 - 각 투자사마다 근거가 된 검색 결과 페이지 URL을 source에 그대로 넣으세요.
 - 마지막에 JSON 하나만 출력하세요: {"vcs":[{"name":"","focus":"투자 분야 (출처 기준)","stage":"투자 단계 (출처에 없으면 빈칸)","why":"이 기업과 맞는 이유 한 줄","source":"URL"}], "note":"찾는 방법·주의할 점 한두 줄"}
 - 5~8곳.`;
-  const r = await callClaudeSearch(system, `[우리 기업]\n${orgContext(org)}\n\n[요청]\n${text}`);
+  const r = await webSearch(system, `[우리 기업]\n${orgContext(org)}\n\n[요청]\n${text}`);
   if (r.error) return { error: r.error };
   let raw;
   try { raw = JSON.parse(r.text.slice(r.text.lastIndexOf('{"vcs"') >= 0 ? r.text.lastIndexOf('{"vcs"') : r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (e) { return { error: 'VC 목록을 읽지 못했어요. 다시 요청해 주세요.' }; }
@@ -1696,7 +1704,7 @@ async function adminApi(req, res, p, sess) {
   if (p === '/api/admin/logout') { delete S.sessions[sess.token]; save(); return json(res, 200, { ok: true }, { 'set-cookie': cookie('', 0) }); }
   if (p === '/api/admin/state') return json(res, 200, {
     telegram: { enabled: !!tgUsername, username: tgUsername },
-    ai: { ...LLM.info(), search: !!ANTHROPIC_API_KEY },
+    ai: { ...LLM.info(), search: SEARCH_READY, searchVia: SEARCH.info() },
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
@@ -2834,7 +2842,7 @@ http.createServer(async (req, res) => {
   });
 }).listen(PORT, () => {
   console.log(`함께봇: http://localhost:${PORT}  ·  관리자: http://localhost:${PORT}/admin`);
-  { const ai = LLM.info(); console.log(`AI 생성: ${ai.label} · 모델 ${ai.model || '-'}${ai.baseUrl ? ' · ' + ai.baseUrl : ''}`); if (!ai.ready) console.log(`경고: ${ai.missing}이(가) 없어 봇이 답하지 못합니다.`); if (!ANTHROPIC_API_KEY) console.log('참고: ANTHROPIC_API_KEY가 없어 웹 검색(IR 봇 VC 찾기)은 쓸 수 없습니다.'); }
+  { const ai = LLM.info(); console.log(`AI 생성: ${ai.label} · 모델 ${ai.model || '-'}${ai.baseUrl ? ' · ' + ai.baseUrl : ''}`); if (!ai.ready) console.log(`경고: ${ai.missing}이(가) 없어 봇이 답하지 못합니다.`); const sv = SEARCH.info(); console.log(`웹 검색: ${sv.label}${SEARCH_READY ? '' : ' — 설정 부족(' + (sv.missing || 'ANTHROPIC_API_KEY') + '), IR 봇 VC 찾기 불가'}`); }
   if (!ADMIN_PASSWORD) console.log('경고: ADMIN_PASSWORD가 없어 관리자 페이지에 들어갈 수 없습니다. 기업 계정을 만들려면 꼭 설정하세요.');
   if (TG_TOKEN) pollTelegram(); else console.log('텔레그램: TELEGRAM_BOT_TOKEN이 없어 중계를 끕니다.');
 });

@@ -432,7 +432,7 @@ HB_API=https://함께봇주소 HB_KEY=hbk_… HB_SECRET=… PORTAL_ADMIN_PASSWOR
 
 ## AI 생성 연결 (Claude API ↔ 로컬 LLM)
 
-봇 답변·기업 정보 문서·IR 초안·일정·할 일 점검·보고 PPT 내용 등 **생성**은 모두 `llm.js` 어댑터를 거칩니다. 환경변수만 바꾸면 로컬 추론 서버로 옮길 수 있습니다. **웹 검색(IR 봇의 VC 찾기)만은 Claude API를 그대로** 씁니다 — 로컬 모델은 실시간 웹 검색을 대신하지 못하기 때문입니다.
+봇 답변·기업 정보 문서·IR 초안·일정·할 일 점검·보고 PPT 내용 등 **생성**은 모두 `llm.js` 어댑터를 거칩니다. 환경변수만 바꾸면 로컬 추론 서버로 옮길 수 있습니다. 웹 검색(IR 봇의 VC 찾기)은 기본으로 Claude API web_search를 쓰고, `SEARCH_ENGINE`을 정하면 아래 **웹 검색 브릿지**로 로컬 LLM에서도 됩니다.
 
 | 변수 | 값 |
 |---|---|
@@ -441,20 +441,41 @@ HB_API=https://함께봇주소 HB_KEY=hbk_… HB_SECRET=… PORTAL_ADMIN_PASSWOR
 | `LLM_MODEL` | `openai`일 때 추론 서버의 모델 이름 (`anthropic`이면 생략 시 `CLAUDE_MODEL`) |
 | `LLM_API_KEY` | 추론 서버가 키를 요구할 때만 (`Authorization: Bearer`) |
 | `LLM_TIMEOUT_MS` | 응답 대기 한도, 기본 180000 |
-| `ANTHROPIC_API_KEY` | `anthropic` 생성과, 어느 경우든 웹 검색에 사용. 로컬 모드에서 비우면 VC 찾기만 쓸 수 없음 |
+| `ANTHROPIC_API_KEY` | `anthropic` 생성과, 브릿지를 쓰지 않을 때의 웹 검색에 사용 |
 
 로컬 모드 예:
 ```
 LLM_PROVIDER=openai
 LLM_BASE_URL=http://gpu-server:8000
 LLM_MODEL=<추론 서버에 올린 모델 이름>
-ANTHROPIC_API_KEY=sk-ant-...   # VC 찾기(웹 검색)용, 선택
+SEARCH_ENGINE=searxng          # 웹 검색도 로컬로 (아래 브릿지)
+SEARCH_BASE_URL=http://searxng:8080
 ```
 
 - 추론형 모델이 내보내는 `<think>…</think>` 생각 과정은 답에서 뺍니다.
 - 추론 서버 오류·시간 초과면 기존처럼 안내하고 토큰을 환불합니다.
 - 관리자 화면 「AI 봇 토큰 사용량」 위에 현재 연결(종류·모델·추론 서버 주소)과 웹 검색 가능 여부가 보입니다. 서버 시작 로그에도 찍힙니다.
 - 로컬 모델은 JSON 출력(IR·보고 PPT 구조)과 한국어 품질이 모델마다 다릅니다. 전환 전에 같은 요청으로 품질을 비교하세요. 모델·GPU 사양은 정해 두지 않았습니다.
+
+### 웹 검색 브릿지 (`search.js`)
+
+로컬 LLM에는 웹 검색 도구가 없으므로 서버가 중간에서 검색을 대신합니다.
+
+1. AI 생성(로컬이든 Claude든)이 임무에 맞는 검색어 3~5개를 정함
+2. 서버가 검색 엔진에 질의, 결과 주소 중복 제거(최대 20건)
+3. 상위 페이지 몇 곳의 본문 일부를 가져옴 (사설·내부망 주소와 그쪽으로의 리다이렉트는 접속 안 함)
+4. 검색 결과 묶음만 근거로 AI가 답함 → 답의 출처가 실제 검색 결과 주소인지 서버가 다시 확인(지어낸 출처는 뺌)
+
+| 변수 | 값 |
+|---|---|
+| `SEARCH_ENGINE` | 비움(기본, Claude API web_search) · `searxng`(자체 호스팅 메타 검색 — 외부 검색 API 계약 없이 운영 가능) · `brave`(Brave Search API) |
+| `SEARCH_BASE_URL` | `searxng` 주소. SearXNG `settings.yml`의 `search.formats`에 `json`을 넣어야 함 |
+| `SEARCH_API_KEY` | `brave` 구독 키 |
+| `SEARCH_FETCH_PAGES` | 본문을 가져올 상위 페이지 수, 기본 5 (0이면 검색 요약만) |
+
+- 로컬 LLM + SearXNG 조합이면 생성·검색 모두 외부 AI API 없이 돌아갑니다. SearXNG도 결국 외부 검색 엔진(구글·빙 등)에 질의하므로 검색어 자체는 밖으로 나갑니다.
+- 검색 엔진 오류·결과 없음이면 안내하고 토큰을 환불합니다. 관리자 화면에 현재 검색 방식이 보입니다.
+- 실제 SearXNG·Brave 연결 시험은 아직 하지 않았고, 시험은 가짜 응답으로만 했습니다.
 
 ## 시험 (`npm test`)
 
@@ -473,6 +494,7 @@ ANTHROPIC_API_KEY=sk-ant-...   # VC 찾기(웹 검색)용, 선택
 - `mkt-doc` — 마케팅 봇이 승인된 문서만 문맥으로 쓰는지 (저장 → 전문가 수정안 대기 → 승인 → 되돌리기). `VERBOSE=1 node tests/mkt-doc.test.js`로 봇이 받은 기업 정보를 직접 볼 수 있음
 - `doc` — HTML 정리기 공격 사례, 문서 저장·충돌·되돌리기·다운로드, 함께봇 정리안, 전문가 `/info`·`/ask`·파일 올리기, 승인·거절, 상담 종료 후 차단
 - `migration` — 이전 버전 데이터 옮기기, 실시간 알림 분리
+- `search` — 웹 검색 브릿지: 로컬 모델이 검색어 결정·중복 제거, SearXNG·Brave 응답 정리, 검색 결과 묶음만 근거로 답함, 지어낸 출처 제외, Claude API 호출 0회, 검색 엔진 장애 시 환불, 내부망·리다이렉트·비 http 주소 차단
 - `llm` — 로컬 LLM 모드: 생성은 OpenAI 호환 추론 서버로(모델 이름·메시지 형식·인증 헤더), 생각 과정 제거, 추론 서버 오류 시 환불, IR 초안 JSON도 로컬, VC 웹 검색만 Claude API, 관리자 화면 연결 표시
 
 ## 보안
