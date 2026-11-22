@@ -100,7 +100,7 @@ function create(env = process.env, opts = {}) {
 - JSON 하나만 출력: {"queries":["…","…"]}
 
 [임무]
-${system}`, user, 400);
+${system}`, user, 400, { purpose: 'search_plan' });
     if (plan.error) return { error: plan.error };
     let queries = [];
     try { const t = plan.text; queries = JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1)).queries; } catch (e) {}
@@ -136,7 +136,7 @@ ${system}`, user, 400);
 - 근거가 부족하면 개수를 줄이세요.`, `${user}
 
 [검색 결과] (검색어: ${queries.join(' / ')})
-${evidence}`, maxTokens);
+${evidence}`, maxTokens, { purpose: 'search_answer' });
     if (ans.error) return { error: ans.error };
     return { text: ans.text, urls: new Set(results.map(x => x.url)), queries, via: c.engine };
   }

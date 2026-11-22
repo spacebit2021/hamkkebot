@@ -19,7 +19,9 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
 const ANTHROPIC_BASE_URL = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
 // AI 생성은 어댑터(llm.js)를 거침 — LLM_PROVIDER=openai 로 로컬 추론 서버 전환. 웹 검색(VC 찾기)만 Anthropic API 직접 호출
-const LLM = require('./llm').create();
+const { AsyncLocalStorage } = require('async_hooks');
+const ACT = new AsyncLocalStorage(); // 지금 AI를 부른 기업·구성원·봇 (사용량 기록용)
+const LLM = require('./llm').create(process.env, { onUsage: u => recordUsage(u) });
 const AI_READY = LLM.ready();
 // 웹 검색: SEARCH_ENGINE을 정하면 브릿지(서버가 검색 → AI 생성이 결과로 답함, 로컬 LLM 가능), 비우면 Claude API web_search
 const SEARCH = require('./search').create();
@@ -60,6 +62,18 @@ const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 let S;
 try { S = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch (_) {}
 S = S || {};
+// 기업 지식 보존: 대화·사용 내역 영구 기록 + 전체 백업 (kb.js)
+const KBM = require('./kb');
+const KB = KBM.create({
+  archiveDir: process.env.ARCHIVE_DIR || DATA_FILE.replace(/\.json$/i, '') + '-archive',
+  backupDir: process.env.BACKUP_DIR || DATA_FILE.replace(/\.json$/i, '') + '-backups',
+  keepDaily: +process.env.BACKUP_KEEP_DAILY || 14,
+  keepMonthly: process.env.BACKUP_KEEP_MONTHLY === undefined || process.env.BACKUP_KEEP_MONTHLY === '' ? 12 : +process.env.BACKUP_KEEP_MONTHLY,
+  hook: process.env.BACKUP_HOOK || '',
+});
+const BACKUP_HOUR = process.env.BACKUP_HOUR === undefined || process.env.BACKUP_HOUR === '' ? 3 : Math.max(0, Math.min(23, +process.env.BACKUP_HOUR || 0));
+if (!S.usage) S.usage = [];     // 최근 AI 사용 내역 (화면용, 전체는 archive/usage-*.jsonl)
+if (!S.backups) S.backups = []; // 백업 실행 기록
 if (S.rooms && !S.orgs) {
   // 이전 버전(기업 하나) 데이터를 첫 기업으로 옮김. 계정은 관리자 페이지에서 만들어야 함.
   const o = S.org || {};
@@ -107,7 +121,7 @@ function reserveTokens(org, n) { if (n <= 0) return true; ensureFunds(org, n); i
 function refundTokens(org, n) { if (n > 0) { fromPlatform(org.id, n, 'refund'); save(); emit('room', {}, org.id); } }
 // 봇 사용료가 확정되면 운영 기관이 출금(환전)할 수 있는 몫에 더함 — 실제 Claude API 요금을 운영 기관이 내므로.
 // 무제한(기간제) 토큰으로 쓴 사용료는 운영 기관이 공짜로 준 토큰이라 빼 둠 (그만큼 다른 기업이 충전한 돈이 빠져나가지 않게)
-function chargeRecord(org, n, info) { if (n > 0) { if (!unlimitedActive(org) && S.platform) S.platform.exchangeable = (S.platform.exchangeable || 0) + n; record(org, { type: 'bot', amount: n, ...info }); afterSpend(org); } }   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
+function chargeRecord(org, n, info) { if (n > 0) { if (!unlimitedActive(org) && S.platform) S.platform.exchangeable = (S.platform.exchangeable || 0) + n; record(org, { type: 'bot', amount: n, ...info }); usageCharge(org, n, info); afterSpend(org); } }   // 전문가 팀방(텔레그램 그룹) {chatId: {title, members:[expertId], roomId, list:[roomId]}}
 for (const e of S.experts) {
   if (typeof e.balance !== 'number') e.balance = 0;
   if (e.rate === undefined) e.rate = null;        // 시간당 토큰 (전문가가 직접 정함)
@@ -119,7 +133,10 @@ const RATE_MAX = 1000;
 const suggestTokens = (minutes, rate) => rate ? Math.max(1, Math.ceil(rate * minutes / 60)) : null;
 
 let saveTimer = null;
-const save = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => fs.writeFile(DATA_FILE, JSON.stringify(S, null, 1), () => {}), 300); };
+// 저장: 임시 파일에 쓰고 이름을 바꿔, 쓰는 도중 서버가 멈춰도 data.json이 반쯤 쓰인 채로 남지 않게 함
+function flushSave() { clearTimeout(saveTimer); saveTimer = null; try { KBM.writeAtomic(DATA_FILE, JSON.stringify(S, null, 1)); } catch (e) { console.error('저장 실패', e.message); } }
+const save = () => { clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 300); };
+for (const sig of ['SIGTERM', 'SIGINT']) process.once(sig, () => { if (saveTimer) flushSave(); process.exit(0); });
 const newId = p => p + crypto.randomBytes(5).toString('hex');
 const code6 = () => crypto.randomBytes(3).toString('hex').toUpperCase();
 const str = (v, n) => ('' + (v == null ? '' : v)).trim().slice(0, n);
@@ -170,6 +187,7 @@ function emit(type, data, orgId) {
 function addMsg(room, m, opt = {}) {
   m.id = newId('m'); m.at = Date.now();
   room.msgs.push(m);
+  KB.append(room.orgId, 'msgs', { ...m, roomId: room.id, roomName: room.name }); // 화면은 최근 500개만, 기록은 전부 보관
   if (room.msgs.length > 500) room.msgs.splice(0, room.msgs.length - 500);
   save(); emit('room', { roomId: room.id }, room.orgId);
   // 전문가 팀방이 붙어 있으면 방의 새 메시지를 팀방에도 보여 줌 (팀방에서 보낸 것은 제외)
@@ -410,7 +428,17 @@ function shareFor(org, c) {
   return { amount, type: 'share', block };
 }
 // 봇 실행: 토큰을 먼저 잡고 → 답을 받으면 사용 기록, 실패하면 돌려줌
-async function runBot(room, botId, text, ctx = {}) {
+// 봇 실행 = 이 구성원의 AI 사용: 안에서 일어나는 모든 AI 호출·토큰 차감이 이 구성원·봇으로 기록됨
+function runBot(room, botId, text, ctx = {}) {
+  return ACT.run({ orgId: room.orgId, roomId: room.id, roomName: room.name, botId, member: memberOf(ctx) }, () => runBotInner(room, botId, text, ctx));
+}
+function memberOf(ctx = {}) {
+  if (ctx.uid) { const u = userById(ctx.uid); return { k: 'u:' + ctx.uid, kind: 'web', name: u ? u.name : (ctx.author || '구성원') }; }
+  if (ctx.tgUid) return { k: 't:' + ctx.tgUid, kind: 'telegram', name: ctx.author || '텔레그램 사용자' };
+  if (ctx.auto) return { k: 'a:auto', kind: 'auto', name: '자동 실행' };
+  return { k: 'r:room', kind: 'room', name: ctx.author || '기업방' };
+}
+async function runBotInner(room, botId, text, ctx = {}) {
   const bot = botById(botId);
   if (!bot) return;
   const org = orgById(room.orgId);
@@ -422,6 +450,7 @@ async function runBot(room, botId, text, ctx = {}) {
   else if (bot.kind === 'sched') { const mode = schedMode(text); costId = mode === 'detail' ? 'sched_detail' : mode === 'ppt' ? 'sched_ppt' : 'sched'; run = () => runSchedBot(bot, room, org, text, mode, ctx); }
   else if (bot.kind === 'todo') { const mode = ctx.auto ? 'review' : todoMode(text); costId = mode === 'review' ? 'todo_review' : mode === 'detail' ? 'todo_detail' : mode === 'ppt' ? 'todo_ppt' : 'todo'; run = () => runSchedBot(bot, room, org, text, mode, ctx, 'todo'); }
   else if (bot.kind === 'talent') run = () => runTalentBot(bot, room, org, text, ctx);
+  else if (bot.kind === 'assistant') run = () => runAssistant(bot, room, org, text);
   else if (bot.kind === 'security') { costId = ctx.site ? (ctx.deep ? 'security_deep' : 'security_scan') : 'free'; run = () => runSecurityBot(bot, room, org, text, ctx); } // 사이트 등록·인증·목록은 무료, 점검만 토큰
   else if (bot.kind === 'ir') { const mode = irMode(org, text); costId = mode === 'create' ? 'ir' : mode === 'vc' ? 'ir_vc' : 'ir_update'; run = () => runIrBot(bot, room, org, text, mode); }
   else if (isDeck) { costId = bot.custom ? 'custom_ppt' : `${bot.id}_ppt`; run = () => runDeckBot(bot, room, org, text); }
@@ -447,7 +476,7 @@ async function runBot(room, botId, text, ctx = {}) {
   org.botUse = org.botUse || {}; org.botUse[bot.id] = (org.botUse[bot.id] || 0) + 1; // 봇 추천 게시판: 써 본 봇만 추천
   if (bot.custom) { const c = S.customBots.find(x => x.id === bot.id); if (c) { c.stats = c.stats || { uses: 0, earned: 0, byOrg: {} }; c.stats.uses++; c.stats.byOrg[org.id] = (c.stats.byOrg[org.id] || 0) + 1; } }
   if (share) payShare(org, cb, share, sh.type, room, sh.type === 'royalty' ? sh.origin : null);
-  say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}), ...(r.talent ? { talent: r.talent } : {}) });
+  say(r.text, { cost: cost + share, ...(r.site ? { site: r.site, tgText: r.tgText } : {}), ...(r.deck ? { deck: r.deck, tgText: r.tgText } : {}), ...(r.ir ? { ir: r.ir, tgText: r.tgText } : {}), ...(r.sched ? { sched: r.sched } : {}), ...(r.todo ? { todo: r.todo } : {}), ...(r.talent ? { talent: r.talent } : {}), ...(r.kbRefs ? { kbRefs: r.kbRefs } : {}) });
   if (r.after) r.after();
   if (r.deck && room.tgChatId) { const d = deckById(org, r.deck.id); if (d) tgSendDoc(room.tgChatId, deckFileName(org, d), await DECK.buildDeck(d.outline, org.name), `${d.title} (PPT v${d.n})`, PPTX_MIME); }
 }
@@ -793,7 +822,8 @@ async function runIrBot(bot, room, org, text, mode) {
 async function callClaudeSearch(system, user, maxTokens = 4000) {
   if (!ANTHROPIC_API_KEY) return { error: '서버에 ANTHROPIC_API_KEY가 설정되지 않아 검색할 수 없어요.' };
   const messages = [{ role: 'user', content: user }], urls = new Set();
-  let text = '';
+  let text = '', uin = 0, uout = 0, searches = 0, okRun = false;
+  const t0 = Date.now();
   try {
     for (let i = 0; i < 4; i++) {
       const r = await fetch(`${ANTHROPIC_BASE_URL}/v1/messages`, {
@@ -802,6 +832,7 @@ async function callClaudeSearch(system, user, maxTokens = 4000) {
       });
       const j = await r.json();
       if (!r.ok) { console.error('Claude 검색 오류', r.status, j); return { error: r.status === 429 ? '요청이 많아 잠시 쉬어야 해요. 1분 뒤 다시 시도해 주세요.' : '검색 답변을 받지 못했어요. 다시 시도해 주세요.' }; }
+      if (j.usage) { uin += (j.usage.input_tokens || 0) + (j.usage.cache_read_input_tokens || 0); uout += j.usage.output_tokens || 0; searches += (j.usage.server_tool_use && j.usage.server_tool_use.web_search_requests) || 0; }
       for (const blk of j.content || []) {
         if (blk.type === 'web_search_tool_result' && Array.isArray(blk.content)) blk.content.forEach(x => x.url && urls.add(x.url));
         if (blk.type === 'text') { text += blk.text; (blk.citations || []).forEach(c => c.url && urls.add(c.url)); }
@@ -809,7 +840,9 @@ async function callClaudeSearch(system, user, maxTokens = 4000) {
       if (j.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: j.content }); continue; } // 긴 검색은 이어서 진행
       break;
     }
+    okRun = true;
   } catch (e) { console.error(e); return { error: '검색 중 네트워크 오류가 났어요.' }; }
+  finally { recordUsage({ provider: 'anthropic', model: CLAUDE_MODEL, in: uin, out: uout, est: false, ms: Date.now() - t0, ok: okRun, purpose: 'web_search', searches }); }
   return { text, urls };
 }
 // 검색이 필요한 호출의 단일 입구 — 반환 { text, urls } 또는 { error }
@@ -941,6 +974,11 @@ async function receiveDocFromExpert(ex, msg, teamRoom) {
   return tgSend(msg.chat.id, `"${roomLabel(t.room)}"에 기업 정보 문서 수정안 v${v.n}을 올렸어요. 기업이 승인하면 알려 드릴게요.${stale}`);
 }
 async function answerAboutOrg(ex, msg, arg, teamRoom) {
+  const tt = docTargetRoom(ex, msg, arg, teamRoom);
+  if (tt.error || !tt.org) return answerAboutOrgInner(ex, msg, arg, teamRoom);
+  return ACT.run({ orgId: tt.org.id, roomId: tt.room && tt.room.id, roomName: tt.room && tt.room.name, botId: 'expert_ask', member: { k: 'x:' + ex.id, kind: 'expert', name: ex.name + ' (전문가)' } }, () => answerAboutOrgInner(ex, msg, arg, teamRoom));
+}
+async function answerAboutOrgInner(ex, msg, arg, teamRoom) {
   const q = arg.replace(/^\d+\s*/, '').trim();
   if (!q) return tgSend(msg.chat.id, '물어볼 내용을 적어 주세요. 예: /ask 이 기업의 주요 고객은?');
   const t = docTargetRoom(ex, msg, arg, teamRoom); if (t.error) return tgSend(msg.chat.id, t.error);
@@ -1237,6 +1275,7 @@ const HELP = () => `함께봇 사용법
 ${BOTS.filter(b => !b.soon).map(b => `/${b.id} 요청내용 — ${b.name}에게 요청`).join('\n')}
 @${tgUsername} 요청내용 — 이 방의 기본 봇에게 요청
 봇의 메시지에 답장해도 대화가 이어집니다.
+메시지에 답장으로 /kb 제목 — 그 내용을 기업 지식베이스에 저장
 연결코드는 웹앱 채팅방의 "텔레그램" 버튼에서 받을 수 있어요.`;
 
 async function handleTelegram(msg) {
@@ -1252,6 +1291,7 @@ async function handleTelegram(msg) {
   if (!msg.text) return;
   const chat = msg.chat, isPrivate = chat.type === 'private';
   const name = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ') || msg.from.username || '텔레그램 사용자';
+  const tgUid = msg.from.id;
   const text = msg.text.trim();
 
   let cmd = null, arg = text;
@@ -1313,6 +1353,14 @@ async function handleTelegram(msg) {
 
   const mention = tgUsername && new RegExp('@' + tgUsername + '\\b', 'i');
   const replyToBot = msg.reply_to_message && msg.reply_to_message.from && msg.reply_to_message.from.username === tgUsername;
+  if (cmd === 'kb') {
+    if (!room) return tgSend(chat.id, '이 대화는 아직 웹앱 채팅방과 연결되지 않았어요.');
+    const src = msg.reply_to_message && (msg.reply_to_message.text || msg.reply_to_message.caption || '');
+    if (!src) return tgSend(chat.id, '지식베이스에 저장할 메시지에 "답장"으로 /kb 제목 을 보내 주세요.');
+    const body = src.replace(/^\[[^\]\n]{1,40}\]\n/, '');
+    const it = kbSave(orgById(room.orgId), { title: arg || body.split('\n')[0], body, source: { roomId: room.id, via: 'telegram' } }, { name, k: 't:' + tgUid });
+    return tgSend(chat.id, it.error ? it.error : `지식베이스에 저장했어요: #${it.n} ${it.title}\n웹앱 「지식베이스」에서 고치거나 찾을 수 있어요.`);
+  }
   let botId = null;
   if (cmd && botById(cmd)) botId = cmd;
   else if (cmd) return tgSend(chat.id, `"/${cmd}"는 없는 명령이에요.\n${HELP()}`);
@@ -1325,17 +1373,17 @@ async function handleTelegram(msg) {
   }
 
   const ask = (cmd ? arg : text.replace(mention || /$^/, '')).trim();
-  addMsg(room, { from: 'tg', name, text });
+  addMsg(room, { from: 'tg', name, text, tgUid });
   forwardToExperts(room, `${name}: ${text}`);
   // 일정 봇이 있는 방: 일정 이야기로 보이는 메시지는 명령 없이도 알아서 반영 (아니면 조용히 넘어감)
   // 할 일 봇이 있는 방: 할 일로 보이는 말은 보낸 사람의 할 일로 반영 (일정 봇도 있으면 "할 일·todo"라고 쓴 것만)
   const todoWord = /할\s*일|할일|todo|투두/i.test(text);
-  if (!botId && room.bots.includes('todo') && TODO.TODO_RE.test(text) && (todoWord || !room.bots.includes('sched'))) return runBot(room, 'todo', text, { author: name, source: 'telegram', silent: true });
-  if (!botId && room.bots.includes('sched') && SCHED.SCHED_RE.test(text)) return runBot(room, 'sched', text, { author: name, source: 'telegram', silent: true });
+  if (!botId && room.bots.includes('todo') && TODO.TODO_RE.test(text) && (todoWord || !room.bots.includes('sched'))) return runBot(room, 'todo', text, { author: name, tgUid, source: 'telegram', silent: true });
+  if (!botId && room.bots.includes('sched') && SCHED.SCHED_RE.test(text)) return runBot(room, 'sched', text, { author: name, tgUid, source: 'telegram', silent: true });
   if (botId) {
     if (!room.bots.includes(botId)) { room.bots.push(botId); addMsg(room, { from: 'sys', text: `${botById(botId).name}이(가) 텔레그램에서 호출돼 방에 들어왔어요` }); }
     const kind = botById(botId).kind;
-    runBot(room, botId, ask || (kind === 'sched' ? '일정표 링크 보여 줘' : kind === 'todo' ? '할 일표 링크 보여 줘' : '자기소개를 해 주세요'), { author: name, source: 'telegram' });
+    runBot(room, botId, ask || (kind === 'sched' ? '일정표 링크 보여 줘' : kind === 'todo' ? '할 일표 링크 보여 줘' : '자기소개를 해 주세요'), { author: name, tgUid, source: 'telegram' });
   }
 }
 
@@ -1412,7 +1460,7 @@ async function runSecurityBot(bot, room, org, text, ctx) {
     const go = [], skip = [];
     for (const x of targets) { x.deepManual = x.deepManual && x.deepManual.day === today ? x.deepManual : { day: today, n: 0 }; if (x.deepManual.n >= 3) skip.push(x.site); else { x.deepManual.n++; go.push(x.site); } }
     save();
-    for (const st of go) setTimeout(() => runBot(room, 'security', '심화 점검 ' + st, { site: st, deep: true, author: ctx.author }), 0);
+    for (const st of go) setTimeout(() => runBot(room, 'security', '심화 점검 ' + st, { site: st, deep: true, author: ctx.author, uid: ctx.uid, tgUid: ctx.tgUid }), 0);
     return { free: true, text: `${go.length ? `${go.join(', ')} 긴급 심화 점검을 시작했어요 (사이트당 ${cost}토큰). 시간이 조금 더 걸려요.` : ''}${skip.length ? `\n${skip.join(', ')}은(는) 오늘 심화 점검을 3번 해서 내일 다시 할 수 있어요.` : ''}` };
   }
   if (/점검|검사|검증|스캔|확인해/.test(text)) {
@@ -1421,7 +1469,7 @@ async function runSecurityBot(bot, room, org, text, ctx) {
     const go = [], skip = [];
     for (const x of targets) { x.manual = x.manual && x.manual.day === today ? x.manual : { day: today, n: 0 }; if (x.manual.n >= 5) skip.push(x.site); else { x.manual.n++; go.push(x.site); } }
     save();
-    for (const st of go) setTimeout(() => runBot(room, 'security', '점검 ' + st, { site: st, author: ctx.author }), 0);
+    for (const st of go) setTimeout(() => runBot(room, 'security', '점검 ' + st, { site: st, author: ctx.author, uid: ctx.uid, tgUid: ctx.tgUid }), 0);
     return { free: true, text: `${go.length ? `${go.join(', ')} 점검을 시작했어요 (사이트당 ${costOf('security_scan')}토큰). 끝나면 결과를 알려 드려요.` : ''}${skip.length ? `\n${skip.join(', ')}은(는) 오늘 직접 점검을 5번 해서 내일 다시 할 수 있어요 (자동 점검은 그대로 해요).` : ''}` };
   }
   if (/목록|사이트|설정|상태/.test(text) || !text.trim()) {
@@ -1705,6 +1753,8 @@ async function adminApi(req, res, p, sess) {
   if (p === '/api/admin/state') return json(res, 200, {
     telegram: { enabled: !!tgUsername, username: tgUsername },
     ai: { ...LLM.info(), search: SEARCH_READY, searchVia: SEARCH.info() },
+    backup: { ...backupSummary(), history: S.backups.slice(-10).reverse(), snapshots: KB.list().slice(0, 30), running: !!backupRunning },
+    usageMonth: (() => { const k = KBM.kst(), m0 = Date.parse(`${k.y}-${k.m}-01T00:00:00+09:00`), o = {}; for (const e of S.usage) if (e.type === 'llm' && e.at >= m0) { const x = o[e.orgId || '-'] || (o[e.orgId || '-'] = { calls: 0, in: 0, out: 0, est: false }); x.calls++; x.in += e.in; x.out += e.out; if (e.est) x.est = true; } return o; })(),
     orgs: S.orgs.map(o => ({ ...orgPublic(o), wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
@@ -1799,6 +1849,8 @@ async function adminApi(req, res, p, sess) {
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
     save(); return json(res, 200, { ok: true });
   }
+  if (p === '/api/admin/backup/run') { const r = await runBackup('manual'); return json(res, 200, { ok: r.ok, backup: r }); }
+  if (p === '/api/admin/backup/verify') { const v = KB.verify(str(b.name, 40)); return json(res, 200, v); }
   if (p === '/api/admin/fee') {
     const v = Number(b.pct); if (!Number.isInteger(v) || v < 0 || v > 30) return BAD(res, '운영 기관 몫은 0~30% 사이 정수로 정해 주세요');
     const old = feePct(); if (old === v) return json(res, 200, { ok: true, pct: v });
@@ -2024,7 +2076,7 @@ async function userApi(req, res, p, sess) {
       costs: Object.fromEntries(COST_ITEMS().map(c => [c.id, costOf(c.id)])),
       sched: org.sched && org.sched.items.length ? { url: schedUrl(org), v: org.sched.v } : null,
       feePct: feePct(), exchangeable: Math.max(0, Math.min(org.exchangeable || 0, org.wallet)), address: ledger.addressOf(org.id), portal: !!CHARGE_PORTAL_URL,
-      boardTabs: boardTabs(org),
+      boardTabs: boardTabs(org), kbCount: ensureKb(org).items.filter(x => !x.deleted).length, members: S.users.filter(u => u.orgId === org.id).length,
       talentTab: hasBot(org, 'talent') || S.talents.some(t => (t.orgId === org.id && t.status !== 'draft') || t.picks.some(x => x.orgId === org.id)),
       boardUnread: S.posts.filter(x => x.orgId === org.id && x.unreadAnswer).length,
       todo: org.todo || todoRooms(org).length ? (() => { const td = ensureTodo(org), t = todayKst(), nx = TODO.upcoming(td, t); return { url: todoUrl(org), editUrl: todoEditUrl(org), v: td.v, next: nx, left: SCHED.diffDays(t, nx), days: td.cycle.days, count: td.items.filter(x => x.status === 'active').length }; })() : null
@@ -2149,6 +2201,57 @@ async function userApi(req, res, p, sess) {
     if (S.posts.filter(x => x.quick && x.orgId === org.id && Date.now() - x.at < 36e5).length >= 10) return BAD(res, '한 시간에 10개까지 물을 수 있어요');
     const x = await askAdmin(org, user, text, b.secret);
     return json(res, 200, { ok: true, id: x.id, n: x.quick, sent: !!x.tgMsgId });
+  }
+  // ----- 구성원별 AI 사용량 -----
+  if (p === '/api/usage' || p === '/api/usage.csv') {
+    const qs = new URL(req.url, 'http://x').searchParams;
+    const days = Math.max(1, Math.min(366, parseInt(qs.get('days'), 10) || 30));
+    if (p === '/api/usage.csv') {
+      const k = KBM.kst();
+      res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${org.name}_AI사용내역_${days}일_${k.y}${k.m}${k.d}.csv`)}` });
+      return res.end(usageCsv(org, days));
+    }
+    return json(res, 200, usageReport(org, days));
+  }
+  // ----- 기업 지식베이스 -----
+  if (p.startsWith('/api/kb')) {
+    const qs = new URL(req.url, 'http://x').searchParams;
+    const who = { name: user.name, k: 'u:' + user.id };
+    if (p === '/api/kb' && req.method === 'GET') {
+      const q = (qs.get('q') || '').trim(), kb = ensureKb(org);
+      const live = kb.items.filter(x => !x.deleted);
+      const items = q ? KBM.rank(live, q, 50) : live.slice().sort((a, b) => b.updatedAt - a.updatedAt);
+      return json(res, 200, { items: items.map(kbView), trash: kb.items.filter(x => x.deleted).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 100).map(kbView), status: kbStatus(org) });
+    }
+    if (p === '/api/kb/export' && req.method === 'GET') {
+      const md = qs.get('format') === 'md', k = KBM.kst();
+      res.writeHead(200, { 'content-type': md ? 'text/markdown; charset=utf-8' : 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${org.name}_지식베이스_${k.y}${k.m}${k.d}.${md ? 'md' : 'json'}`)}` });
+      return res.end(kbExport(org, md ? 'md' : 'json'));
+    }
+    if (req.method !== 'POST') return json(res, 405, {});
+    const b = await body(req);
+    if (p === '/api/kb') {
+      let src = null, b2 = { ...b };
+      if (b.roomId && b.msgId) { // 채팅 메시지를 지식으로 저장
+        const room = S.rooms.find(r => r.id === b.roomId && r.orgId === org.id), m = room && room.msgs.find(x => x.id === b.msgId);
+        if (!m) return BAD(res, '없는 메시지예요', 404);
+        src = { roomId: room.id, roomName: room.name, msgId: m.id, from: m.from, botName: botById(m.from) ? botById(m.from).name : (m.name || m.by || ''), via: 'web' };
+        if (!b2.body) b2.body = m.text;
+      }
+      const it = kbSave(org, { ...b2, source: src }, who);
+      return it.error ? BAD(res, it.error) : json(res, 200, { ok: true, item: kbView(it) });
+    }
+    const m = p.match(/^\/api\/kb\/(\w+)(?:\/(delete|restore))?$/);
+    const it = m && ensureKb(org).items.find(x => x.id === m[1]);
+    if (!it) return BAD(res, '없는 지식 항목이에요', 404);
+    if (m[2] === 'delete' || m[2] === 'restore') {
+      it.deleted = m[2] === 'delete'; it.updatedAt = Date.now();
+      KB.append(org.id, 'kb', { at: it.updatedAt, op: m[2], by: user.name, item: kbView(it) });
+      save(); emit('kb', {}, org.id); return json(res, 200, { ok: true });
+    }
+    if (it.deleted) return BAD(res, '휴지통의 항목은 먼저 되살려 주세요');
+    const r = kbEdit(org, it, b, who);
+    return r.error ? BAD(res, r.error) : json(res, 200, { ok: true, item: kbView(r) });
   }
   // ----- 게시판 -----
   if (p.startsWith('/api/board')) {
@@ -2383,7 +2486,7 @@ async function userApi(req, res, p, sess) {
       const n = ir.comments.filter(c => c.status === 'open').length;
       if (!n) return BAD(res, '반영할 코멘트가 없어요');
       addMsg(room, { from: 'me', text: `전문가 코멘트 ${n}개를 반영해 주세요` });
-      await runBot(room, 'ir', `전문가 코멘트 ${n}개를 반영해 주세요`);
+      await runBot(room, 'ir', `전문가 코멘트 ${n}개를 반영해 주세요`, { author: user.name, uid: user.id, source: 'web' });
       return json(res, 200, { ok: true });
     }
     if (p === '/api/ir/final') {
@@ -2497,7 +2600,7 @@ async function userApi(req, res, p, sess) {
       if (d.versions.some(v => v.status === 'pending' && v.by.kind === 'bot')) return BAD(res, '함께봇 정리안이 이미 기다리고 있어요. 먼저 승인하거나 거절해 주세요.');
       const cost = AI_READY ? costOf('summary') : 0; // AI 없이 붙이기만 하는 경우는 무료
       if (!reserveTokens(org, cost)) return BAD(res, `함께봇 문서 정리는 ${cost}토큰을 써요. 잔액(${org.wallet}토큰)이 부족해요.`);
-      const r = await generateDocProposal(org, user);
+      const r = await ACT.run({ orgId: org.id, botId: 'doc', member: memberOf({ uid: user.id }) }, () => generateDocProposal(org, user));
       if (r.error) { refundTokens(org, cost); return BAD(res, r.error); }
       chargeRecord(org, cost, { botId: 'summary', botName: '함께봇 문서 정리' });
       return json(res, 200, { ok: true, id: r.version.id, n: r.version.n, cost });
@@ -2634,12 +2737,165 @@ async function userApi(req, res, p, sess) {
   if (act === 'messages') {
     const text = str(b.text, 4000);
     if (!text) return BAD(res, '빈 메시지예요');
-    addMsg(room, { from: 'me', text, to: b.to || null });
+    addMsg(room, { from: 'me', text, to: b.to || null, by: user.name, uid: user.id });
     if (room.tgChatId) tgSend(room.tgChatId, `[웹앱] ${text}`);
     forwardToExperts(room, text);
-    if (b.to && room.bots.includes(b.to)) runBot(room, b.to, text, { author: user.name, source: 'web' });
+    if (b.to && room.bots.includes(b.to)) runBot(room, b.to, text, { author: user.name, uid: user.id, source: 'web' });
     return json(res, 200, { ok: true });
   }
+}
+
+// ---------- 구성원별 AI 사용량 ----------
+// 모든 AI 호출(생성·검색)을 누가(구성원)·어디서(채팅방)·어떤 봇으로 썼는지 기록. 화면용 최근분은 S.usage, 전체는 archive/usage-*.jsonl
+const PURPOSE_NAMES = { generate: '생성', web_search: '웹 검색(Claude)', search_plan: '검색어 정하기', search_answer: '검색 결과로 답하기' };
+function recordUsage(u) {
+  const a = ACT.getStore() || {};
+  const e = { id: newId('l'), type: 'llm', at: Date.now(), orgId: a.orgId || null, roomId: a.roomId || null, roomName: a.roomName || '', member: a.member || { k: 'sys', kind: 'system', name: '시스템' }, botId: a.botId || null,
+    purpose: u.purpose || 'generate', provider: u.provider, model: u.model, in: Math.max(0, u.in | 0), out: Math.max(0, u.out | 0), est: !!u.est, ms: u.ms | 0, ok: !!u.ok, ...(u.searches ? { searches: u.searches } : {}) };
+  S.usage.push(e); if (S.usage.length > 20000) S.usage.splice(0, S.usage.length - 20000);
+  if (e.orgId) { KB.append(e.orgId, 'usage', e); emit('usage', {}, e.orgId); }
+  save();
+}
+// 확정된 함께봇 토큰 차감도 같은 구성원으로 기록 (AI 토큰과 따로 집계)
+function usageCharge(org, n, info) {
+  const a = ACT.getStore(); if (!a) return;
+  const e = { id: newId('l'), type: 'charge', at: Date.now(), orgId: org.id, roomId: a.roomId || null, roomName: a.roomName || '', member: a.member, botId: a.botId || null, hb: n, item: info && info.botName };
+  S.usage.push(e); KB.append(org.id, 'usage', e);
+}
+const botLabel = id => id === 'doc' ? '함께봇 문서 정리' : id === 'expert_ask' ? '전문가 질문(/ask)' : (botById(id) || {}).name || id || '-';
+function usageReport(org, days) {
+  const from = Date.now() - days * 864e5;
+  // 기간이 화면용 기록보다 길면 영구 기록에서 읽음 (정확한 전체)
+  const recentFrom = S.usage.length ? S.usage[0].at : Infinity;
+  const rows = from >= recentFrom ? S.usage.filter(e => e.orgId === org.id && e.at >= from) : KB.read(org.id, 'usage', from).filter(e => e.at >= from);
+  const members = {}, bots = {}, daily = {};
+  for (const u of S.users.filter(u => u.orgId === org.id)) members['u:' + u.id] = { key: 'u:' + u.id, name: u.name, kind: 'web', calls: 0, fails: 0, in: 0, out: 0, est: false, hb: 0, last: null };
+  const tot = { calls: 0, fails: 0, in: 0, out: 0, hb: 0, est: false, searches: 0 };
+  for (const e of rows) {
+    const m = members[e.member.k] || (members[e.member.k] = { key: e.member.k, name: e.member.name, kind: e.member.kind, calls: 0, fails: 0, in: 0, out: 0, est: false, hb: 0, last: null });
+    if (e.member.kind !== 'web') m.name = e.member.name;
+    const b = bots[e.botId || '-'] || (bots[e.botId || '-'] = { id: e.botId, name: botLabel(e.botId), calls: 0, in: 0, out: 0, hb: 0 });
+    const k = KBM.kst(e.at), d = `${k.y}-${k.m}-${k.d}`, dd = daily[d] || (daily[d] = { date: d, calls: 0, in: 0, out: 0, hb: 0 });
+    if (e.type === 'charge') { m.hb += e.hb; b.hb += e.hb; dd.hb += e.hb; tot.hb += e.hb; continue; }
+    m.calls++; b.calls++; dd.calls++; tot.calls++;
+    if (!e.ok) { m.fails++; tot.fails++; }
+    m.in += e.in; m.out += e.out; b.in += e.in; b.out += e.out; dd.in += e.in; dd.out += e.out; tot.in += e.in; tot.out += e.out;
+    if (e.est) { m.est = true; tot.est = true; }
+    tot.searches += e.searches || 0;
+    if (!m.last || e.at > m.last) m.last = e.at;
+  }
+  const days_ = [];
+  for (let i = Math.min(days, 90) - 1; i >= 0; i--) { const k = KBM.kst(Date.now() - i * 864e5), d = `${k.y}-${k.m}-${k.d}`; days_.push(daily[d] || { date: d, calls: 0, in: 0, out: 0, hb: 0 }); }
+  const ai = LLM.info();
+  return {
+    days, from, totals: tot,
+    members: Object.values(members).sort((a, b) => (b.in + b.out) - (a.in + a.out) || b.hb - a.hb),
+    bots: Object.values(bots).sort((a, b) => (b.in + b.out) - (a.in + a.out)),
+    daily: days_,
+    recent: rows.slice(-100).reverse().map(e => ({ at: e.at, type: e.type, member: e.member.name, kind: e.member.kind, bot: botLabel(e.botId), room: e.roomName, purpose: PURPOSE_NAMES[e.purpose] || e.purpose || '', in: e.in, out: e.out, est: e.est, hb: e.hb, ok: e.ok, ms: e.ms })),
+    engine: { label: ai.label, model: ai.model },
+  };
+}
+function usageCsv(org, days) {
+  const from = Date.now() - days * 864e5;
+  const rows = KB.read(org.id, 'usage', from).filter(e => e.at >= from);
+  const q = v => { const t = String(v == null ? '' : v); return /[",\n]/.test(t) || /^[=+\-@]/.test(t) ? `"${(/^[=+\-@]/.test(t) ? "'" : '') + t.replace(/"/g, '""')}"` : t; };
+  const head = ['시각(KST)', '구분', '구성원', '경로', '봇', '채팅방', '용도', '엔진', '모델', 'AI 입력 토큰', 'AI 출력 토큰', '토큰 수 추정', '함께봇 토큰', '성공', '걸린 시간(ms)'];
+  const lines = rows.map(e => { const k = KBM.kst(e.at); return [`${k.y}-${k.m}-${k.d} ${k.H}:${k.M}:${k.S}`, e.type === 'charge' ? '함께봇 토큰 차감' : 'AI 호출', e.member.name, e.member.kind, botLabel(e.botId), e.roomName, e.type === 'charge' ? e.item : (PURPOSE_NAMES[e.purpose] || e.purpose), e.provider || '', e.model || '', e.in || 0, e.out || 0, e.est ? '예' : '', e.hb || 0, e.type === 'charge' ? '' : (e.ok ? '예' : '아니오'), e.ms || ''].map(q).join(','); });
+  return '﻿' + [head.join(','), ...lines].join('\r\n');
+}
+
+// ---------- 기업 지식베이스 ----------
+// org.kb = { seq, items: [{ id, n, title, body, tags, source, by, at, updatedAt, deleted, history:[{at,by,title,body,tags}] }] }
+// 변경은 모두 archive/<기업>/kb.jsonl 에도 남음 (지워도 기록은 남고, 휴지통에서 되살릴 수 있음)
+const ensureKb = org => org.kb || (org.kb = { seq: 0, items: [] });
+const kbView = it => ({ id: it.id, n: it.n, title: it.title, body: it.body, tags: it.tags, source: it.source, by: it.by, at: it.at, updatedAt: it.updatedAt, deleted: !!it.deleted, edits: it.history.length });
+const parseTags = t => (Array.isArray(t) ? t : String(t || '').split(/[,#\s]+/)).map(x => str(String(x).replace(/^#/, ''), 20)).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).slice(0, 8);
+function kbSave(org, b, who) {
+  const kb = ensureKb(org);
+  const title = str(String(b.title || '').replace(/\s+/g, ' ').trim(), 80), body = String(b.body || '').replace(/\r/g, '').trim().slice(0, 20000);
+  if (!body) return { error: '저장할 내용이 비어 있어요.' };
+  if (kb.items.filter(x => !x.deleted).length >= 2000) return { error: '지식 항목은 2,000개까지 저장할 수 있어요. 오래된 항목을 정리해 주세요.' };
+  const it = { id: newId('k'), n: ++kb.seq, title: title || str(body.split('\n')[0], 40), body, tags: parseTags(b.tags), source: b.source || null, by: who.name, byKey: who.k, at: Date.now(), updatedAt: Date.now(), deleted: false, history: [] };
+  kb.items.push(it);
+  KB.append(org.id, 'kb', { at: it.at, op: 'create', by: who.name, item: kbView(it) });
+  save(); emit('kb', {}, org.id);
+  return it;
+}
+function kbEdit(org, it, b, who) {
+  const title = str(String(b.title || '').replace(/\s+/g, ' ').trim(), 80), body = String(b.body == null ? it.body : b.body).replace(/\r/g, '').trim().slice(0, 20000);
+  if (!body) return { error: '내용이 비어 있어요.' };
+  it.history.push({ at: it.updatedAt, by: it.by, title: it.title, body: it.body, tags: it.tags });
+  if (it.history.length > 30) it.history.splice(0, it.history.length - 30); // 30번 넘는 이전 내용은 영구 기록(kb.jsonl)에만
+  Object.assign(it, { title: title || it.title, body, tags: b.tags === undefined ? it.tags : parseTags(b.tags), by: who.name, byKey: who.k, updatedAt: Date.now() });
+  KB.append(org.id, 'kb', { at: it.updatedAt, op: 'edit', by: who.name, item: kbView(it) });
+  save(); emit('kb', {}, org.id);
+  return it;
+}
+function kbFind(org, q, n = 5) { return KBM.rank(ensureKb(org).items.filter(x => !x.deleted), q, n); }
+
+// 업무 AI: 기업 정보 문서 + 지식베이스에서 관련 항목 + 방의 최근 대화로 답함
+async function runAssistant(bot, room, org, text) {
+  const recent = room.msgs.slice(-14, -1);
+  const hist = recent.map(m => {
+    const who = m.from === 'me' ? `${m.by || '구성원'}(웹)` : m.from === 'tg' ? `${m.name}(텔레그램)` : m.from === 'hx' ? `${m.name}(사람 전문가)` : m.from === 'sys' ? null : (BOTS.find(b => b.id === m.from) || {}).name;
+    return who ? `${who}: ${m.text.slice(0, 1500)}` : null;
+  }).filter(Boolean).join('\n\n');
+  const hits = kbFind(org, `${text} ${recent.slice(-2).map(m => m.text).join(' ')}`.slice(0, 1200), 5);
+  const kbText = hits.map(it => `[지식 #${it.n}] ${it.title}${it.tags.length ? ` (태그: ${it.tags.join(', ')})` : ''}\n${it.body.slice(0, 2500)}`).join('\n\n');
+  const system = `${bot.role}\n\n[우리 기업]\n${orgContext(org)}\n\n[기업 지식베이스에서 이번 질문과 관련 있어 보이는 항목]\n${kbText || '(관련 항목 없음)'}\n\n한국어로 답하세요. 서식은 굵게(**)와 줄바꿈만 쓰세요.`;
+  const r = await callClaude(system, `[이 채팅방의 최근 대화]\n${hist || '(없음)'}\n\n[이번 요청]\n${text}`, 3000);
+  if (r.error) return { error: r.error };
+  const used = hits.filter(it => r.text.includes(`#${it.n}`));
+  return { text: r.text + (r.cut ? '\n\n(답변이 길어 중간에 끊겼어요. "이어서"라고 보내 주세요.)' : ''), kbRefs: used.length ? used.map(it => ({ id: it.id, n: it.n, title: it.title })) : null };
+}
+
+// ---------- 백업 ----------
+function backupSummary() {
+  const last = S.backups[S.backups.length - 1] || null, lastOk = [...S.backups].reverse().find(x => x.ok) || null;
+  return { last, lastOk, hour: BACKUP_HOUR, keepDaily: KB.keepDaily, keepMonthly: KB.keepMonthly, hook: KB.hook };
+}
+let backupRunning = null;
+async function runBackup(reason) {
+  if (backupRunning) return backupRunning;
+  backupRunning = (async () => {
+    flushSave();
+    const counts = { orgs: S.orgs.length, users: S.users.length, rooms: S.rooms.length, kbItems: S.orgs.reduce((a, o) => a + (o.kb ? o.kb.items.filter(x => !x.deleted).length : 0), 0) };
+    const r = await KB.run(S, reason, counts);
+    S.backups.push(r); if (S.backups.length > 60) S.backups.splice(0, S.backups.length - 60);
+    save(); emit('backup', {}, '*');
+    if (!r.ok) { console.error('백업 문제', r.problem); if (S.adminTg) tgSend(S.adminTg.chatId, `⚠ 함께봇 백업 문제 (${r.name}): ${r.problem}`); }
+    return r;
+  })();
+  try { return await backupRunning; } finally { backupRunning = null; }
+}
+// 매일 BACKUP_HOUR시(한국 시간) 이후 첫 확인 때 하루 한 번 자동 백업
+function backupTick() {
+  const k = KBM.kst(), today = `${k.y}-${k.m}-${k.d}`;
+  if (+k.H < BACKUP_HOUR || S.lastAutoBackup === today) return;
+  S.lastAutoBackup = today; save();
+  runBackup('daily').catch(e => console.error(e));
+}
+setInterval(backupTick, +process.env.BACKUP_TICK_MS || 10 * 6e4).unref();
+// 기업에게 보여 줄 '우리 지식 보관 상태'
+function kbStatus(org) {
+  const st = KB.stats(org.id), b = backupSummary(), kb = ensureKb(org), cur = docCurrent(org);
+  return { items: kb.items.filter(x => !x.deleted).length, trash: kb.items.filter(x => x.deleted).length, docVersions: org.doc ? org.doc.versions.length : 0, docN: cur ? cur.n : null,
+    archive: { msgs: st.msgs, usage: st.usage, kbEvents: st.kbEvents, bytes: st.bytes, since: st.since },
+    backup: { lastOkAt: b.lastOk ? b.lastOk.at : null, lastAt: b.last ? b.last.at : null, lastOk: b.last ? b.last.ok : null, verified: b.lastOk ? b.lastOk.verified : false, hour: b.hour, keepDaily: b.keepDaily, offsite: b.hook } };
+}
+function kbExport(org, format) {
+  const kb = ensureKb(org), items = kb.items.filter(x => !x.deleted), cur = docCurrent(org);
+  if (format === 'md') {
+    const k = KBM.kst();
+    return `# ${org.name} 지식베이스\n\n내보낸 때: ${k.y}-${k.m}-${k.d} ${k.H}:${k.M} (KST) · 항목 ${items.length}개\n\n` +
+      (cur ? `## 기업 정보 문서 v${cur.n}\n\n${DOC.htmlToText(cur.html)}\n\n` : '') +
+      items.map(it => `## #${it.n} ${it.title}\n\n${it.tags.length ? `태그: ${it.tags.map(t => '#' + t).join(' ')}\n\n` : ''}${it.body}\n\n— ${it.by}, ${new Date(it.updatedAt).toISOString().slice(0, 10)}\n`).join('\n');
+  }
+  return JSON.stringify({ format: 'hamkkebot-kb/1', exportedAt: Date.now(), org: orgPublic(org),
+    doc: org.doc ? org.doc.versions.map(v => ({ n: v.n, at: v.at, by: v.by, note: v.note, status: v.status, html: v.html })) : [],
+    kb: kb.items.map(it => ({ ...kbView(it), history: it.history })),
+    messages: KB.read(org.id, 'msgs'), usage: KB.read(org.id, 'usage') }, null, 1);
 }
 
 // ---------- 토큰 API (블록체인과 같은 인터페이스) ----------

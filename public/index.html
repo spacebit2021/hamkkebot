@@ -145,6 +145,15 @@ button{cursor:pointer}
 .st{font-size:12px;padding:2px 8px;border-radius:8px;background:var(--side)}
 .typing{color:var(--mute);font-size:14px;padding:0 4px}
 .tools{display:flex;gap:6px;margin-top:6px}
+.kbref{font-size:13px;color:var(--mute);margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;align-items:center}.kbref button{border:1px solid var(--line);background:var(--card);border-radius:8px;font-size:12px;min-height:28px;padding:0 8px;color:inherit}
+.kbstat{border:1.5px solid var(--line);border-radius:14px;padding:10px 14px;background:var(--card);font-size:14px;line-height:1.6}.kbstat b.ok{color:#05603a}.kbstat b.bad{color:#b42318}
+.kbbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.kbbar input{flex:1;min-width:180px;min-height:42px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);padding:0 12px;font:inherit;color:inherit}
+.kbitem{border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px;background:var(--card)}.kbitem h4{margin:0 0 4px;font-size:16px}.kbitem .kbbody{white-space:pre-wrap;font-size:14px;max-height:9.5em;overflow:hidden;overflow-wrap:anywhere}.kbitem.open .kbbody{max-height:none}
+.kbform{display:flex;flex-direction:column;gap:8px}.kbform input,.kbform textarea{min-height:42px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);padding:8px 12px;font:inherit;color:inherit}.kbform textarea{min-height:220px}
+.utot{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}.utot div{border:1.5px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--card)}.utot b{display:block;font-size:20px}.utot span{font-size:13px;color:var(--mute)}
+.utbl{width:100%;border-collapse:collapse;font-size:14px}.utbl th,.utbl td{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}.utbl td.n,.utbl th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ubars{display:flex;align-items:flex-end;gap:2px;height:90px;border-bottom:1px solid var(--line)}.ubars i{flex:1;background:var(--pri);min-height:1px;border-radius:2px 2px 0 0;opacity:.85}
+.uscroll{overflow-x:auto}
 .tools button{border:0;background:none;color:var(--mute);font-size:13px;min-height:32px;padding:0 6px}
 .empty{margin:auto;text-align:center;max-width:420px;color:var(--mute)}
 .empty h3{color:var(--ink);font-size:22px;margin:14px 0 8px}
@@ -203,6 +212,8 @@ textarea.field{min-height:80px;resize:vertical}
   <button class="docbtn" id="docBtn" type="button"><span>기업 정보 문서</span><span class="badge" id="docBadge" hidden></span></button>
   <button class="docbtn" id="boardBtn" type="button"><span>게시판 (Q&amp;A · 봇 추천)</span><span class="badge" id="boardBadge" hidden></span></button>
   <button class="docbtn" id="irBtn" type="button"><span>IR 자료</span><span class="badge" id="irBadge" hidden></span></button>
+  <button class="docbtn" id="kbBtn" type="button"><span>지식베이스</span><span class="note" style="padding:0" id="kbN"></span></button>
+  <button class="docbtn" id="useBtn" type="button"><span>AI 사용량 (구성원별)</span></button>
   <a class="docbtn sitelink" id="schedLink" target="_blank" rel="noopener" hidden><span>일정표 (간트차트)</span><span class="note" style="padding:0" id="schedLinkN"></span></a>
   <div class="todobox" id="todoBox" hidden><a class="docbtn sitelink" id="todoLink" target="_blank" rel="noopener"><span>할 일표</span><span class="note" style="padding:0" id="todoLinkN"></span></a><div class="todoacts"><a class="btn ghost sm" id="todoEdit" target="_blank" rel="noopener">고치기 ↗</a><button class="btn ghost sm" type="button" id="todoReset">링크 새로 만들기</button></div></div>
   <a class="docbtn sitelink" id="siteLink" target="_blank" rel="noopener" hidden><span>우리 홈페이지</span><span class="note" style="padding:0" id="siteLinkN"></span></a>
@@ -245,6 +256,22 @@ textarea.field{min-height:80px;resize:vertical}
   <h3 id="tgTitle">텔레그램 그룹 연결</h3>
   <div id="tgBody"></div>
   <div class="row"><button class="btn ghost" data-close>닫기</button></div>
+ </div>
+</div>
+
+<div class="veil docveil" id="kbVeil" role="dialog" aria-modal="true" aria-labelledby="kbTitle">
+ <div class="sheet docsheet" style="overflow-y:auto">
+  <div class="dochead"><div><h3 id="kbTitle">기업 지식베이스</h3><div class="note" style="padding:0">채팅에서 나온 좋은 답·정한 규칙·거래처 정보를 모아 두면 업무 AI가 근거로 씁니다.</div></div><button class="btn ghost" type="button" data-close>닫기</button></div>
+  <div class="kbstat" id="kbStat"></div>
+  <div id="kbMain"></div>
+ </div>
+</div>
+
+<div class="veil docveil" id="useVeil" role="dialog" aria-modal="true" aria-labelledby="useTitle">
+ <div class="sheet docsheet" style="overflow-y:auto">
+  <div class="dochead"><div><h3 id="useTitle">AI 사용량 — 구성원별</h3><div class="note" style="padding:0" id="useMeta"></div></div><button class="btn ghost" type="button" data-close>닫기</button></div>
+  <div class="doctabs" id="useTabs"></div>
+  <div id="useMain"></div>
  </div>
 </div>
 
@@ -372,11 +399,11 @@ function msgHTML(m,i){
   const sg=m.pay.suggested, chips=[...new Set([sg,1,3,5,10].filter(Boolean))];
   return head+`<div class="paycard" data-pay="${m.id}"><b>${esc(x.name)} 전문가에게 상담 토큰 보내기</b>${sg?`<div class="paycalc">상담 ${m.pay.minutes}분 × 시간당 ${m.pay.rate}토큰 → 계산 <b>${sg}개</b> · 현재 잔액 ${S.wallet}개</div>`:''}${sg&&sg>S.wallet?`<div class="payerr">잔액이 계산값보다 적어요. 지금 잔액만큼 보내거나, 관리자에게 충전받은 뒤 이 카드에서 보낼 수 있어요.</div>`:''}<div class="chips">${chips.map(n=>`<button type="button" data-amt="${n}" aria-pressed="${n===sg}">${n}개${n===sg?' (계산값)':''}</button>`).join('')}</div><input class="field" type="number" inputmode="numeric" min="1" step="1" placeholder="직접 입력 (현재 잔액 ${S.wallet}개)" value="${sg||''}" data-amtin><input class="field" maxlength="200" placeholder="감사 메시지 (선택)" data-memo><div class="payerr" data-err></div><div class="acts"><button class="btn" type="button" data-paysend>보내기</button><button class="btn ghost" type="button" data-payskip>보내지 않기</button></div></div>`}
  if(m.from==='sys')return `<div class="msg sys">${esc(m.text)}</div>`;
- if(m.from==='me')return `<div class="msg me"><div><div class="bubble">${esc(m.text)}</div></div></div>`;
+ if(m.from==='me')return `<div class="msg me"><div>${S.members>1&&m.by?`<div class="who" style="justify-content:flex-end">${esc(m.by)}</div>`:''}<div class="bubble">${esc(m.text)}</div></div></div>`;
  if(m.from==='tg')return `<div class="msg">${tgAv(m.name)}<div><div class="who">${esc(m.name)}<span class="src">텔레그램</span></div><div class="bubble">${esc(m.text)}</div></div></div>`;
  if(m.from==='hx'){const x=expById(m.expertId)||{name:m.name,color:'#06a77d'};return `<div class="msg">${xAv(x)}<div><div class="who">${esc(m.name)}<span class="human">사람 전문가</span></div><div class="bubble">${esc(m.text)}</div></div></div>`}
  const b=botById(m.from)||{name:'봇',short:'봇',color:'#888'};
- return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.site?siteCard(m):''}${m.talent?talentCard(m):''}${m.todo&&m.todo.url?`<div class="sitecard"><div class="acts"><a class="btn" href="${esc(m.todo.url)}" target="_blank" rel="noopener">할 일표 열기 ↗</a>${S.todo?`<a class="btn ghost" href="${esc(S.todo.editUrl)}" target="_blank" rel="noopener">고치기 ↗</a>`:''}</div></div>`:''}${m.sched&&m.sched.url?`<div class="sitecard"><div class="acts"><a class="btn" href="${esc(m.sched.url)}" target="_blank" rel="noopener">일정표 열기 ↗</a><span class="note" style="padding:0">간트차트 · 버전 ${m.sched.v} · 텔레그램 일정방에도 같은 내용이 갔어요</span></div></div>`:''}${m.ir?`<div class="sitecard"><div class="acts"><button class="btn" type="button" data-openir>IR 자료 열기</button><span class="note" style="padding:0">${m.ir.vc?`투자사 ${m.ir.count}곳 · 출처 포함`:`v${m.ir.n} · ${m.ir.count}장${m.ir.applied?` · 코멘트 ${m.ir.applied}개 반영`:''}`}</span></div></div>`:''}${m.deck?`<div class="sitecard deckcard"><div class="acts"><a class="btn" href="/api/deck/download?id=${m.deck.id}">PPT 내려받기 (.pptx)</a><span class="note" style="padding:0">${m.deck.count}장 · 발표자 메모 포함 · PowerPoint·Keynote·Google 슬라이드에서 열려요</span></div></div>`:''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
+ return `<div class="msg">${av(b)}<div><div class="who">${esc(b.name)}${m.cost?`<span class="src" style="color:var(--mute)">${m.cost}토큰 사용</span>`:''}</div><div class="bubble">${fmt(m.text)}</div>${m.kbRefs?`<div class="kbref">참고한 지식: ${m.kbRefs.map(k=>`<button type="button" data-kbopen="${esc(k.id)}">#${k.n} ${esc(k.title)}</button>`).join('')}</div>`:''}${m.site?siteCard(m):''}${m.talent?talentCard(m):''}${m.todo&&m.todo.url?`<div class="sitecard"><div class="acts"><a class="btn" href="${esc(m.todo.url)}" target="_blank" rel="noopener">할 일표 열기 ↗</a>${S.todo?`<a class="btn ghost" href="${esc(S.todo.editUrl)}" target="_blank" rel="noopener">고치기 ↗</a>`:''}</div></div>`:''}${m.sched&&m.sched.url?`<div class="sitecard"><div class="acts"><a class="btn" href="${esc(m.sched.url)}" target="_blank" rel="noopener">일정표 열기 ↗</a><span class="note" style="padding:0">간트차트 · 버전 ${m.sched.v} · 텔레그램 일정방에도 같은 내용이 갔어요</span></div></div>`:''}${m.ir?`<div class="sitecard"><div class="acts"><button class="btn" type="button" data-openir>IR 자료 열기</button><span class="note" style="padding:0">${m.ir.vc?`투자사 ${m.ir.count}곳 · 출처 포함`:`v${m.ir.n} · ${m.ir.count}장${m.ir.applied?` · 코멘트 ${m.ir.applied}개 반영`:''}`}</span></div></div>`:''}${m.deck?`<div class="sitecard deckcard"><div class="acts"><a class="btn" href="/api/deck/download?id=${m.deck.id}">PPT 내려받기 (.pptx)</a><span class="note" style="padding:0">${m.deck.count}장 · 발표자 메모 포함 · PowerPoint·Keynote·Google 슬라이드에서 열려요</span></div></div>`:''}<div class="tools"><button type="button" data-copy="${i}">복사</button>${m.id?`<button type="button" data-kbsave="${m.id}">지식에 저장</button>`:''}${S.experts.some(x=>x.linked)&&m.id?`<button type="button" data-review="${m.id}">전문가 검토 요청</button>`:''}</div></div></div>`;
 }
 function renderLog(){
  const r=room(); if(!r)return;
@@ -388,7 +415,7 @@ function renderLog(){
  for(const id in keep){const c=document.querySelector(`.paycard[data-pay="${id}"]`);if(c){c.querySelector('[data-amtin]').value=keep[id][0];c.querySelector('[data-memo]').value=keep[id][1]}}
  $('log').scrollTop=$('log').scrollHeight;
 }
-function render(){$('askFab').hidden=false;$('exchN').textContent=`환전 가능 ${S.exchangeable||0}`;$('exchN').title='다른 기업에게서 번 토큰만 환전할 수 있어요';$('walletN').textContent=S.wallet||0;$('boardBadge').hidden=!S.boardUnread;$('boardBadge').textContent=S.boardUnread||'';{const sc=S.sched;$('schedLink').hidden=!sc;if(sc){$('schedLink').href=sc.url;$('schedLinkN').textContent=`버전 ${sc.v} ↗`}}{const td=S.todo;$('todoBox').hidden=!td;if(td){$('todoLink').href=td.url;$('todoEdit').href=td.editUrl;$('todoLinkN').textContent=`${td.count}개 · 점검 ${td.left===0?'오늘':'D-'+td.left} ↗`}}{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
+function render(){$('askFab').hidden=false;$('kbN').textContent=S.kbCount?`${S.kbCount}개`:'';$('exchN').textContent=`환전 가능 ${S.exchangeable||0}`;$('exchN').title='다른 기업에게서 번 토큰만 환전할 수 있어요';$('walletN').textContent=S.wallet||0;$('boardBadge').hidden=!S.boardUnread;$('boardBadge').textContent=S.boardUnread||'';{const sc=S.sched;$('schedLink').hidden=!sc;if(sc){$('schedLink').href=sc.url;$('schedLinkN').textContent=`버전 ${sc.v} ↗`}}{const td=S.todo;$('todoBox').hidden=!td;if(td){$('todoLink').href=td.url;$('todoEdit').href=td.editUrl;$('todoLinkN').textContent=`${td.count}개 · 점검 ${td.left===0?'오늘':'D-'+td.left} ↗`}}{const st=S.site||{};$('siteLink').hidden=!st.published;if(st.published){$('siteLink').href=st.url;$('siteLinkN').textContent=`v${st.n} 게시 중 ↗`}}renderRooms();renderTop();renderLog();renderOrg()}
 
 let callOpen=null, reviewMsg=null, xq='', xsort='';
 function renderBots(){
@@ -484,6 +511,8 @@ $('log').addEventListener('click',async e=>{
   if(t.hasAttribute('data-paysend')){const amt=+inp.value;if(!Number.isInteger(amt)||amt<1){err.textContent='1 이상의 정수를 입력해 주세요';return}
    t.disabled=true;t.textContent='보내는 중…';const j=await api(`/api/rooms/${r.id}/pay`,{msgId:card.dataset.pay,amount:amt,memo:card.querySelector('[data-memo]').value});if(j.error){err.textContent=j.error;t.disabled=false;t.textContent='보내기'}}
   return}const rv=e.target.closest('[data-review]');if(rv){const r=room(),hs=(r.humans||[]).filter(id=>(expById(id)||{}).linked);if(hs.length===1){rv.textContent='보내는 중…';await api(`/api/rooms/${r.id}/review`,{expertId:hs[0],msgId:rv.dataset.review})}else{reviewMsg=rv.dataset.review;renderBots();open('inviteVeil')}return}
+ const ks=e.target.closest('[data-kbsave]');if(ks){if(ks.dataset.done)return;ks.textContent='저장하는 중…';const j=await api('/api/kb',{roomId:room().id,msgId:ks.dataset.kbsave});if(j.error){ks.textContent='저장 안 됨: '+j.error}else{ks.dataset.done=1;ks.textContent=`지식 #${j.item.n}로 저장됨`}return}
+ const ko=e.target.closest('[data-kbopen]');if(ko){openKb(ko.dataset.kbopen);return}
  const c=e.target.closest('[data-copy]');if(!c)return;try{await navigator.clipboard.writeText(room().msgs[+c.dataset.copy].text);c.textContent='복사됨'}catch(err){c.textContent='복사 안 됨'}});
 $('orgBtn').onclick=()=>{const o=S.org||{};$('fName').value=o.name||'';$('fMission').value=o.mission||'';$('fProduct').value=o.product||'';$('fTarget').value=o.target||'';if(o.tone)$('fTone').value=o.tone;open('orgVeil')};
 $('orgForm').addEventListener('submit',async e=>{e.preventDefault();if(e.submitter&&e.submitter.id==='pSave')return;await api('/api/org',{name:$('fName').value.trim(),mission:$('fMission').value.trim(),product:$('fProduct').value.trim(),target:$('fTarget').value.trim(),tone:$('fTone').value});close($('orgForm'))});
@@ -505,6 +534,8 @@ es.addEventListener('board',e=>{let d={};try{d=JSON.parse(e.data)}catch(err){}if
 es.addEventListener('todo',()=>{clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),150)});
 es.addEventListener('sched',()=>{clearTimeout(t);t=setTimeout(()=>load().catch(()=>{}),150)});
 es.addEventListener('ir',async()=>{await loadIr();if($('irVeil').classList.contains('open')&&!document.activeElement.matches('#irMain textarea'))renderIr()});
+es.addEventListener('kb',async()=>{await loadKb();if(KBD&&KBD.status){S.kbCount=KBD.status.items;$('kbN').textContent=S.kbCount?`${S.kbCount}개`:''}if($('kbVeil').classList.contains('open')&&!kbForm)renderKb()});
+es.addEventListener('usage',()=>{clearTimeout(window.__ut);window.__ut=setTimeout(async()=>{if($('useVeil').classList.contains('open')){await loadUse();renderUse()}},800)});
 es.addEventListener('doc',async()=>{await loadDoc();if($('docVeil').classList.contains('open')&&docMode!=='edit')renderDoc()});
 }
 
@@ -778,6 +809,55 @@ function renderDoc(){
   m.innerHTML=`<ul class="hist">${DOCS.history.map(v=>`<li><div><b>v${v.n}</b> ${v.id===c.id?'<span class="st">현재</span>':v.status==='rejected'?'<span class="st">거절됨</span>':''} · ${whenD(v.at)} · ${esc(byL(v.by))}<div class="note" style="padding:0">${esc(v.note||'')}</div></div><div class="acts"><button class="btn ghost" type="button" data-see="${v.id}">보기</button>${v.status==='approved'&&v.id!==c.id?`<button class="btn ghost" type="button" data-revert="${v.id}">이 버전으로 되돌리기</button>`:''}<a class="btn ghost" style="display:inline-flex;align-items:center;text-decoration:none" href="/api/doc/download?id=${v.id}">내려받기</a></div></li>`).join('')}</ul><div class="docerr" id="docErr"></div><div id="docSee"></div>`;}
 }
 const docErr=(t,ok)=>{const e=$('docErr');if(e){e.className=ok?'docok':'docerr';e.textContent=t}};
+// ----- 지식베이스 -----
+let KBD=null,kbQ='',kbForm=null,kbTrash=false,kbOpenId=null;
+const fmtBytes=n=>n>=1048576?(n/1048576).toFixed(1)+'MB':n>=1024?Math.round(n/1024)+'KB':n+'B';
+const dateK=t=>new Date(t).toLocaleString('ko-KR',{year:'numeric',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+async function loadKb(){KBD=await api('/api/kb'+(kbQ?'?q='+encodeURIComponent(kbQ):''))}
+async function openKb(id){kbOpenId=id||null;kbForm=null;kbTrash=false;await loadKb();renderKb();open('kbVeil');if(id){const el=document.querySelector(`[data-kbitem="${CSS.escape(id)}"]`);if(el)el.scrollIntoView({block:'center'})}}
+function renderKb(){if(!KBD||KBD.error){$('kbMain').innerHTML=`<p class="docerr">${esc((KBD&&KBD.error)||'불러오지 못했어요')}</p>`;return}
+ const st=KBD.status,b=st.backup,a=st.archive;
+ $('kbStat').innerHTML=`<b>서버 보관</b> · 지식 ${st.items}개${st.trash?` (휴지통 ${st.trash})`:''} · 기업 정보 문서 ${st.docVersions}개 버전 · 대화 ${a.msgs.toLocaleString()}건${a.since?` (${a.since}부터)`:''} · AI 사용 기록 ${a.usage.toLocaleString()}건 · ${fmtBytes(a.bytes)}<br>
+ <b>백업</b> · ${b.lastOkAt?`마지막 성공 <b class="ok">${dateK(b.lastOkAt)}</b>${b.verified?' · 파일 무결성 확인됨':''}`:'<b>아직 백업 전</b>'}${b.lastAt&&b.lastOk===false?` · <b class="bad">최근 시도 실패</b> (운영 기관에 알림됨)`:''} · 매일 ${b.hour}시 자동 · 최근 ${b.keepDaily}일분과 달마다 1개 보관${b.offsite?' · 외부 저장소에도 복사':''}<br>
+ <span class="note" style="padding:0">채팅방 화면에는 최근 500개만 보이지만, 모든 대화와 지식 변경 이력은 서버에 계속 남아요.</span> <a href="/api/kb/export">전체 내려받기(JSON)</a> · <a href="/api/kb/export?format=md">지식만 문서로(MD)</a>`;
+ if(kbForm){$('kbMain').innerHTML=`<div class="kbform"><input id="kbT" maxlength="80" placeholder="제목" value="${esc(kbForm.title||'')}"><input id="kbG" placeholder="태그 (쉼표로 구분, 예: 거래처, 규칙)" value="${esc((kbForm.tags||[]).join(', '))}"><textarea id="kbB" maxlength="20000" placeholder="내용">${esc(kbForm.body||'')}</textarea><div class="acts"><button class="btn" type="button" id="kbSave">${kbForm.id?'고친 내용 저장':'지식 저장'}</button><button class="btn ghost" type="button" id="kbCancel">취소</button><span class="docerr" id="kbErr"></span></div></div>`;return}
+ const list=kbTrash?KBD.trash:KBD.items;
+ $('kbMain').innerHTML=`<div class="kbbar"><input id="kbQ" type="search" placeholder="지식 찾기 (제목·내용·태그)" value="${esc(kbQ)}" aria-label="지식 찾기"><button class="btn" type="button" id="kbNew">+ 새 지식</button><button class="btn ghost" type="button" id="kbTr">${kbTrash?'지식 목록':'휴지통'+(KBD.status.trash?` (${KBD.status.trash})`:'')}</button></div>
+ <div style="margin-top:10px">${list.length?list.map(it=>`<div class="kbitem${kbOpenId===it.id?' open':''}" data-kbitem="${it.id}"><h4>#${it.n} ${esc(it.title)}</h4><div class="note" style="padding:0 0 6px">${esc(it.by)} · ${dateK(it.updatedAt)}${it.edits?` · ${it.edits}번 고침`:''}${it.source&&it.source.roomName?` · ${esc(it.source.roomName)}${it.source.botName?` · ${esc(it.source.botName)}`:''}에서`:it.source&&it.source.via==='telegram'?' · 텔레그램에서':''}${it.tags.length?' · '+it.tags.map(t=>'#'+esc(t)).join(' '):''}</div><div class="kbbody">${esc(it.body)}</div><div class="tools"><button type="button" data-kbx="more" data-id="${it.id}">${kbOpenId===it.id?'접기':'펼치기'}</button>${kbTrash?`<button type="button" data-kbx="restore" data-id="${it.id}">되살리기</button>`:`<button type="button" data-kbx="edit" data-id="${it.id}">고치기</button><button type="button" data-kbx="delete" data-id="${it.id}">휴지통으로</button>`}</div></div>`).join(''):`<p class="note">${kbTrash?'휴지통이 비어 있어요.':kbQ?'찾는 내용이 없어요.':'아직 저장한 지식이 없어요. 채팅 답변 아래 "지식에 저장"을 누르거나, 텔레그램에서 메시지에 답장으로 /kb 를 보내세요.'}</p>`}</div>`;
+ const q=$('kbQ');let tq;q.oninput=()=>{clearTimeout(tq);tq=setTimeout(async()=>{kbQ=q.value.trim();await loadKb();renderKb();const n=$('kbQ');n.focus();n.setSelectionRange(n.value.length,n.value.length)},300)};
+}
+$('kbBtn').onclick=()=>openKb();
+$('kbVeil').addEventListener('click',async e=>{const t=e.target.closest('button');if(!t)return;
+ if(t.id==='kbNew'){kbForm={};renderKb();$('kbT').focus();return}
+ if(t.id==='kbTr'){kbTrash=!kbTrash;renderKb();return}
+ if(t.id==='kbCancel'){kbForm=null;renderKb();return}
+ if(t.id==='kbSave'){t.disabled=true;const b={title:$('kbT').value,tags:$('kbG').value,body:$('kbB').value};const j=await api(kbForm.id?`/api/kb/${kbForm.id}`:'/api/kb',b);if(j.error){$('kbErr').textContent=j.error;t.disabled=false;return}kbForm=null;kbOpenId=j.item.id;await loadKb();renderKb();return}
+ const x=t.dataset.kbx,id=t.dataset.id;if(!x)return;const it=[...KBD.items,...KBD.trash].find(v=>v.id===id);if(!it)return;
+ if(x==='more'){kbOpenId=kbOpenId===id?null:id;renderKb();return}
+ if(x==='edit'){kbForm={id,title:it.title,body:it.body,tags:it.tags};renderKb();return}
+ if(x==='delete'){if(t.textContent!=='정말 옮길까요?'){t.textContent='정말 옮길까요?';return}await api(`/api/kb/${id}/delete`,{});await loadKb();renderKb();return}
+ if(x==='restore'){await api(`/api/kb/${id}/restore`,{});await loadKb();renderKb();return}
+});
+// ----- 구성원별 AI 사용량 -----
+let USE=null,useDays=30;
+const nf=n=>(n||0).toLocaleString('ko-KR');
+async function openUse(){await loadUse();renderUse();open('useVeil')}
+async function loadUse(){USE=await api('/api/usage?days='+useDays)}
+function renderUse(){
+ $('useTabs').innerHTML=[[1,'1일'],[7,'7일'],[30,'30일'],[90,'90일']].map(([d,l])=>`<button type="button" data-days="${d}" aria-pressed="${useDays===d}">${l}</button>`).join('')+`<a href="/api/usage.csv?days=${useDays}">내역 내려받기 (CSV) ↓</a>`;
+ if(!USE||USE.error){$('useMain').innerHTML=`<p class="docerr">${esc((USE&&USE.error)||'불러오지 못했어요')}</p>`;return}
+ const T=USE.totals,est=T.est?' <span class="chip" title="추론 서버가 토큰 수를 알려 주지 않아 글자 수로 어림한 값이 섞여 있어요">추정 포함</span>':'';
+ $('useMeta').textContent=`AI 엔진: ${USE.engine.label} · ${USE.engine.model||''} · 최근 ${USE.days}일`;
+ const max=Math.max(1,...USE.daily.map(d=>d.in+d.out));
+ $('useMain').innerHTML=`<div class="utot"><div><b>${nf(T.calls)}</b><span>AI 호출${T.fails?` (실패 ${T.fails})`:''}</span></div><div><b>${nf(T.in)}</b><span>AI 입력 토큰${est}</span></div><div><b>${nf(T.out)}</b><span>AI 출력 토큰</span></div><div><b>${nf(T.hb)}</b><span>함께봇 토큰 사용</span></div></div>
+ <h4 style="margin:16px 0 6px">구성원별</h4><div class="uscroll"><table class="utbl"><thead><tr><th>구성원</th><th>경로</th><th class="n">AI 호출</th><th class="n">입력 토큰</th><th class="n">출력 토큰</th><th class="n">함께봇 토큰</th><th>마지막 사용</th></tr></thead><tbody>${USE.members.map(m=>`<tr><td>${esc(m.name)}</td><td>${({web:'웹앱 계정',telegram:'텔레그램',auto:'자동 실행',room:'기업방',expert:'전문가',system:'시스템'})[m.kind]||m.kind}</td><td class="n">${nf(m.calls)}${m.fails?` <span class="note" style="padding:0">(실패 ${m.fails})</span>`:''}</td><td class="n">${nf(m.in)}${m.est?'*':''}</td><td class="n">${nf(m.out)}${m.est?'*':''}</td><td class="n">${nf(m.hb)}</td><td>${m.last?when(m.last):'<span class="note" style="padding:0">사용 없음</span>'}</td></tr>`).join('')}</tbody></table></div>
+ <h4 style="margin:16px 0 6px">봇별</h4><div class="uscroll"><table class="utbl"><thead><tr><th>봇</th><th class="n">AI 호출</th><th class="n">입력 토큰</th><th class="n">출력 토큰</th><th class="n">함께봇 토큰</th></tr></thead><tbody>${USE.bots.length?USE.bots.map(b=>`<tr><td>${esc(b.name)}</td><td class="n">${nf(b.calls)}</td><td class="n">${nf(b.in)}</td><td class="n">${nf(b.out)}</td><td class="n">${nf(b.hb)}</td></tr>`).join(''):'<tr><td colspan="5" class="note">사용 기록이 없어요</td></tr>'}</tbody></table></div>
+ <h4 style="margin:16px 0 6px">날짜별 AI 토큰 (입력+출력)</h4><div class="ubars" role="img" aria-label="날짜별 AI 토큰 막대">${USE.daily.map(d=>`<i style="height:${Math.round((d.in+d.out)/max*100)}%" title="${d.date} · ${nf(d.in+d.out)}토큰 · ${d.calls}회"></i>`).join('')}</div><div class="note" style="padding:2px 0;display:flex;justify-content:space-between"><span>${USE.daily[0].date}</span><span>${USE.daily[USE.daily.length-1].date}</span></div>
+ <h4 style="margin:16px 0 6px">최근 내역</h4><div class="uscroll"><table class="utbl"><thead><tr><th>시각</th><th>구성원</th><th>봇 · 용도</th><th class="n">입력/출력</th><th class="n">함께봇</th></tr></thead><tbody>${USE.recent.length?USE.recent.map(r=>`<tr><td>${when(r.at)}</td><td>${esc(r.member)}</td><td>${esc(r.bot)}${r.type==='llm'?` · ${esc(r.purpose)}${r.ok?'':' <b style="color:#b42318">실패</b>'}`:' · 토큰 차감'}</td><td class="n">${r.type==='llm'?`${nf(r.in)} / ${nf(r.out)}${r.est?'*':''}`:''}</td><td class="n">${r.hb?nf(r.hb):''}</td></tr>`).join(''):'<tr><td colspan="5" class="note">사용 기록이 없어요</td></tr>'}</tbody></table></div>
+ <p class="note">AI 토큰은 엔진이 알려 준 실제 처리량이에요${T.est?' (*는 엔진이 알려 주지 않아 글자 수로 어림한 값)':''}. 함께봇 토큰은 실제로 차감된 상담 토큰이에요. 웹앱은 계정별로, 텔레그램은 사람별로 나뉘어요.</p>`;
+}
+$('useBtn').onclick=openUse;
+$('useTabs').addEventListener('click',async e=>{const b=e.target.closest('[data-days]');if(!b)return;useDays=+b.dataset.days;await loadUse();renderUse()});
 async function openDoc(){await loadDoc();docMode='view';docSel=null;renderDoc();open('docVeil')}
 $('docBtn').onclick=openDoc;
 $('docClose').onclick=()=>{if(docMode==='edit'&&docDirty&&$('docClose').textContent!=='저장 안 하고 닫기'){$('docClose').textContent='저장 안 하고 닫기';return}$('docClose').textContent='닫기';$('docVeil').classList.remove('open')};
