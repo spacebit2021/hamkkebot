@@ -370,7 +370,7 @@ function showLogin(msg){$('app').hidden=true;$('loginScr').hidden=false;if(es){e
 
 async function load(){
  S=await api('/api/state');
- $('loginScr').hidden=true;$('app').hidden=false;$('meName').textContent=S.me.name+' ('+S.me.loginId+')';
+ $('loginScr').hidden=true;$('app').hidden=false;$('meName').textContent=S.me.name+' ('+S.me.loginId+')'+(S.me.role==='owner'?' · 대표':'');
  if(!es)startES();
  try{current=current||localStorage.getItem('hb.room.'+S.me.loginId)}catch(e){}
  if(!S.rooms.find(r=>r.id===current))current=S.rooms[0]&&S.rooms[0].id;
@@ -856,7 +856,7 @@ const durT=m=>m==null?'':`${Math.floor(m/60)}시간 ${m%60}분`;
 async function loadAtt(){ATTD=await api('/api/att'+(attMonth?'?month='+attMonth:''));if(ATTD&&ATTD.report&&!attMonth)attMonth=ATTD.report.month}
 function renderAttBox(){const b=$('attBox');b.hidden=!S.att;if(!S.att||!ATTD||ATTD.error)return;
  $('attHere').innerHTML=ATTD.here?'<b class="ok">사무실 네트워크</b>':`<b class="bad">사무실 밖</b>`;$('attHere').title='지금 접속 IP '+ATTD.myIp;
- const me=ATTD.me;$('attMe').textContent=!ATTD.configured?`운영 기관이 사무실 IP를 정하면 쓸 수 있어요 (지금 IP ${ATTD.myIp})`:me&&me.in?`오늘 출근 ${hmT(me.in)}${me.out?` · 퇴근 ${hmT(me.out)}`:''}`:'오늘 출근 기록 없음';
+ const me=ATTD.me;$('attMe').textContent=!ATTD.configured?(ATTD.owner?`‘기록 보기’에서 사무실 IP를 정해 주세요 (지금 IP ${ATTD.myIp})`:`기업 대표가 사무실 IP를 정하면 쓸 수 있어요 (지금 IP ${ATTD.myIp})`):me&&me.in?`오늘 출근 ${hmT(me.in)}${me.out?` · 퇴근 ${hmT(me.out)}`:''}`:'오늘 출근 기록 없음';
  if(!ATTD.configured)$('attHere').textContent='미설정';
  $('attIn').disabled=!ATTD.configured||!!(me&&me.in);$('attOut').disabled=!ATTD.configured}
 async function attDo(action){$('attMsg').textContent='';const r=await fetch('/api/att',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});const j=await r.json().catch(()=>({error:'응답 오류'}));$('attMsg').textContent=j.error||j.msg||'';$('attMsg').style.color=j.error?'':'var(--mute)';await loadAtt();renderAttBox();if($('attVeil').classList.contains('open'))renderAtt()}
@@ -864,13 +864,16 @@ $('attIn').onclick=()=>attDo('in');$('attOut').onclick=()=>attDo('out');
 $('attOpen').onclick=async()=>{await loadAtt();renderAtt();open('attVeil')};
 function renderAtt(){if(!ATTD||ATTD.error){$('attMain').innerHTML=`<p class="docerr">${esc((ATTD&&ATTD.error)||'불러오지 못했어요')}</p>`;return}
  const R=ATTD.report,[y,m]=R.month.split('-').map(Number),mv=d=>{const t=new Date(y,m-1+d,1);return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}`};
- $('attMeta').textContent=`${ATTD.configured?'운영 기관이 정한 사무실 네트워크에서만 기록':'아직 출퇴근 IP가 정해지지 않았어요'} · 지금 접속 IP ${ATTD.myIp} (${ATTD.here?'사무실 네트워크':'사무실 밖'})${ATTD.memo?' · '+ATTD.memo:''}`;
+ $('attMeta').textContent=`${ATTD.configured?`사무실 IP ${ATTD.ipCount}개에서만 기록${ATTD.updatedBy?` · 정한 사람 ${ATTD.updatedBy}`:''}`:'아직 사무실 IP가 정해지지 않았어요'} · 지금 접속 IP ${ATTD.myIp} (${ATTD.here?'사무실 네트워크':'사무실 밖'})${ATTD.memo?' · '+ATTD.memo:''}`;
  $('attTabs').innerHTML=`<button type="button" data-mon="${mv(-1)}">‹ ${mv(-1)}</button><button type="button" aria-pressed="true">${R.month}</button><button type="button" data-mon="${mv(1)}">${mv(1)} ›</button><a href="/api/att.csv?month=${R.month}">이 달 내려받기 (CSV) ↓</a>`;
- $('attMain').innerHTML=`<h4 style="margin:8px 0 6px">오늘</h4><div class="uscroll"><table class="utbl"><thead><tr><th>이름</th><th>경로</th><th>출근</th><th>퇴근</th></tr></thead><tbody>${ATTD.today.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.kind==='telegram'?'텔레그램':'웹앱'}</td><td>${x.in?hmT(x.in):'<span class="note" style="padding:0">-</span>'}</td><td>${x.out?hmT(x.out):''}</td></tr>`).join('')}</tbody></table></div>
+ const ipBox=ATTD.owner?`<details class="kbstat" style="margin-bottom:10px"${ATTD.configured?'':' open'}><summary><b>사무실 IP 정하기 (대표)</b> · ${ATTD.configured?`${ATTD.ipCount}개`:'미설정'}</summary><div class="kbform" style="margin-top:8px"><div class="note" style="padding:0">이 IP·대역에서 접속했을 때만 출근·퇴근을 기록해요. 한 줄에 하나 (예: 203.0.113.10, 203.0.113.0/24). 사무실에서 열었다면 ‘지금 IP 넣기’를 누르세요. 지금 접속 IP: <b>${esc(ATTD.myIp)}</b></div><textarea id="attIps" style="min-height:90px;font-family:ui-monospace,monospace" aria-label="사무실 IP 목록">${esc((ATTD.ips||[]).join('\n'))}</textarea><input id="attMemo" maxlength="100" placeholder="메모 (예: 본사 2층 와이파이)" value="${esc(ATTD.memo||'')}"><div class="acts"><button class="btn ghost" type="button" id="attAddMine">지금 IP 넣기</button><button class="btn" type="button" id="attSaveIps">저장</button><span class="docerr" id="attIpErr"></span></div></div></details>`:(ATTD.configured?'':'<p class="kbstat">사무실 IP는 <b>기업 대표 계정</b>이 이 화면에서 정해요. 대표에게 요청해 주세요.</p>');
+ $('attMain').innerHTML=ipBox+`<h4 style="margin:8px 0 6px">오늘</h4><div class="uscroll"><table class="utbl"><thead><tr><th>이름</th><th>경로</th><th>출근</th><th>퇴근</th></tr></thead><tbody>${ATTD.today.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.kind==='telegram'?'텔레그램':'웹앱'}</td><td>${x.in?hmT(x.in):'<span class="note" style="padding:0">-</span>'}</td><td>${x.out?hmT(x.out):''}</td></tr>`).join('')}</tbody></table></div>
  <h4 style="margin:16px 0 6px">${R.month} 사람별</h4><div class="uscroll"><table class="utbl"><thead><tr><th>이름</th><th class="n">출근한 날</th><th class="n">머문 시간 합계</th><th class="n">퇴근 기록 없음</th></tr></thead><tbody>${R.people.map(x=>`<tr><td>${esc(x.name)}</td><td class="n">${x.days}</td><td class="n">${x.minutes?durT(x.minutes):'-'}</td><td class="n">${x.noOut||''}</td></tr>`).join('')}</tbody></table></div>
  <h4 style="margin:16px 0 6px">${R.month} 날짜별 기록</h4><div class="uscroll"><table class="utbl"><thead><tr><th>날짜</th><th>이름</th><th>출근</th><th>퇴근</th><th class="n">머문 시간</th></tr></thead><tbody>${R.records.length?R.records.slice().reverse().map(r=>`<tr><td>${r.date}</td><td>${esc(r.name)}</td><td>${hmT(r.in)}</td><td>${r.out?hmT(r.out)+(r.outEdits?' (다시 기록)':''):''}</td><td class="n">${durT(r.minutes)}</td></tr>`).join(''):'<tr><td colspan="5" class="note">기록이 없어요</td></tr>'}</tbody></table></div>
  ${ATTD.denied.length?`<h4 style="margin:16px 0 6px">사무실 밖이라 기록하지 않은 시도 (최근 30건)</h4><div class="uscroll"><table class="utbl"><thead><tr><th>시각</th><th>이름</th><th>요청</th><th>접속 IP</th></tr></thead><tbody>${ATTD.denied.map(d=>`<tr><td>${when(d.at)}</td><td>${esc(d.name)}</td><td>${d.action==='in'?'출근':'퇴근'}${d.via==='telegram-link'?' (텔레그램 링크)':''}</td><td>${esc(d.ip)}</td></tr>`).join('')}</tbody></table></div>`:''}
  <p class="note">IP 확인은 “사무실 네트워크에서 접속했는지”만 확인해요. 같은 계정을 다른 사람이 쓰거나 사무실 VPN으로 접속한 경우까지 구분하지는 못해요. 기록 정정은 운영 기관에 요청해 주세요.</p>`;
+ if(ATTD.owner){$('attAddMine').onclick=()=>{const t=$('attIps'),v=t.value.trim();if(!v.split(/\s+/).includes(ATTD.myIp))t.value=(v?v+'\n':'')+ATTD.myIp};
+  $('attSaveIps').onclick=async()=>{const bt=$('attSaveIps');bt.disabled=true;const r=await fetch('/api/att?set=ips',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ips:$('attIps').value,memo:$('attMemo').value})});const j=await r.json().catch(()=>({error:'응답 오류'}));bt.disabled=false;if(j.error){$('attIpErr').textContent=j.error;return}$('attIpErr').style.color='var(--mute)';$('attIpErr').textContent=`저장했어요 (${j.ips.length}개)`;await load();await loadAtt();renderAttBox();renderAtt()}}
 }
 $('attTabs').addEventListener('click',async e=>{const b=e.target.closest('[data-mon]');if(!b)return;attMonth=b.dataset.mon;await loadAtt();renderAtt()});
 // ----- 구성원별 AI 사용량 -----

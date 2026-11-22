@@ -76,6 +76,9 @@ const KB = KBM.create({
   hook: process.env.BACKUP_HOOK || '',
 });
 const BACKUP_HOUR = process.env.BACKUP_HOUR === undefined || process.env.BACKUP_HOUR === '' ? 3 : Math.max(0, Math.min(23, +process.env.BACKUP_HOUR || 0));
+// 계정 역할: 'owner'(기업 대표) | 'member'. 대표가 없는 기업은 가장 먼저 만든 계정을 대표로
+for (const o of S.orgs || []) { const us = (S.users || []).filter(u => u.orgId === o.id); if (us.length && !us.some(u => u.role === 'owner')) us[0].role = 'owner'; }
+for (const u of S.users || []) if (!u.role) u.role = 'member';
 if (!S.usage) S.usage = [];     // 최근 AI 사용 내역 (화면용, 전체는 archive/usage-*.jsonl)
 if (!S.backups) S.backups = []; // 백업 실행 기록
 if (S.rooms && !S.orgs) {
@@ -146,6 +149,7 @@ const code6 = () => crypto.randomBytes(3).toString('hex').toUpperCase();
 const str = (v, n) => ('' + (v == null ? '' : v)).trim().slice(0, n);
 const orgById = id => S.orgs.find(o => o.id === id);
 const userById = id => S.users.find(u => u.id === id);
+const isOwner = u => !!u && u.role === 'owner';
 const roomById = id => S.rooms.find(r => r.id === id);
 const roomByChat = chatId => S.rooms.find(r => r.tgChatId === chatId);
 const expertById = id => S.experts.find(e => e.id === id);
@@ -1763,7 +1767,7 @@ async function adminApi(req, res, p, sess) {
     ai: { ...LLM.info(), search: SEARCH_READY, searchVia: SEARCH.info() },
     backup: { ...backupSummary(), history: S.backups.slice(-10).reverse(), snapshots: KB.list().slice(0, 30), running: !!backupRunning },
     usageMonth: (() => { const k = KBM.kst(), m0 = Date.parse(`${k.y}-${k.m}-01T00:00:00+09:00`), o = {}; for (const e of S.usage) if (e.type === 'llm' && e.at >= m0) { const x = o[e.orgId || '-'] || (o[e.orgId || '-'] = { calls: 0, in: 0, out: 0, est: false }); x.calls++; x.in += e.in; x.out += e.out; if (e.est) x.est = true; } return o; })(),
-    orgs: S.orgs.map(o => ({ ...orgPublic(o), att: o.att ? { ips: o.att.ips || [], memo: o.att.memo || '', updatedAt: o.att.updatedAt, today: (o.att.records || []).filter(r => r.date === ATT.dayK(Date.now())).length } : null, wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name })) })),
+    orgs: S.orgs.map(o => ({ ...orgPublic(o), att: o.att ? { ips: o.att.ips || [], memo: o.att.memo || '', updatedAt: o.att.updatedAt, today: (o.att.records || []).filter(r => r.date === ATT.dayK(Date.now())).length } : null, wallet: o.wallet, unlimited: o.unlimited ? { ...o.unlimited, active: unlimitedActive(o) } : null, site: o.site && o.site.published ? { url: siteUrl(o.site.slug), slug: o.site.slug } : null, rooms: S.rooms.filter(r => r.orgId === o.id).length, users: S.users.filter(u => u.orgId === o.id).map(u => ({ id: u.id, loginId: u.loginId, name: u.name, role: u.role || 'member' })) })),
     experts: S.experts.map(e => ({ ...expertProfile(e), linked: !!e.tgChatId, regCode: e.regCode, active: roomsOfExpert(e).length })),
     costs: COST_ITEMS().map(c => ({ ...c, cost: costOf(c.id) })),
     chain: { ...ledger.info(), supply: ledger.supply(), treasury: { address: ledger.addressOf('platform'), wallet: S.platform.wallet, exchangeable: Math.max(0, Math.min(S.platform.exchangeable || 0, S.platform.wallet)) }, portalUrl: CHARGE_PORTAL_URL, clients: S.apiClients.map(c => ({ id: c.id, name: c.name, keyId: c.keyId, scopes: c.scopes, mintLimit: c.mintLimit, createdAt: c.createdAt, revokedAt: c.revokedAt, lastUsedAt: c.lastUsedAt })), txs: S.chain.txs.slice(-50).reverse().map(t => ({ ...ledger.getTx(t.hash), orgName: acctLabel(t.address), fromName: t.from ? acctLabel(t.from) : '', clientName: (S.apiClients.find(c => c.id === t.clientId) || {}).name })) },
@@ -1792,7 +1796,7 @@ async function adminApi(req, res, p, sess) {
     const e = idError(loginId) || pwError(b.password); if (e) return BAD(res, e);
     if (S.users.some(u => u.loginId === loginId)) return BAD(res, '이미 쓰는 아이디예요');
     const org = { id: newId('o'), name, mission: '', product: '', target: '', tone: '', wallet: 0 };
-    const user = { id: newId('u'), orgId: org.id, loginId, name: str(b.userName, 30) || name };
+    const user = { id: newId('u'), orgId: org.id, loginId, name: str(b.userName, 30) || name, role: 'owner' }; // 첫 계정 = 기업 대표
     setPw(user, b.password);
     S.orgs.push(org); S.users.push(user);
     S.rooms.push({ id: newId('r'), orgId: org.id, name: '우리 팀 마케팅', bots: [], humans: [], msgs: [] });
@@ -1825,7 +1829,7 @@ async function adminApi(req, res, p, sess) {
       const r = ATT.parseIps(b.ips);
       if (r.errors.length) return BAD(res, `IP 형식을 확인해 주세요: ${r.errors.slice(0, 5).join(', ')}`);
       org.att = org.att || { records: [], denied: [] };
-      Object.assign(org.att, { ips: r.list, memo: str(b.memo, 100), updatedAt: Date.now(), updatedBy: '운영 기관' });
+      Object.assign(org.att, { ips: r.list, memo: str(b.memo, 100), updatedAt: Date.now(), updatedBy: '운영 기관' }); // 운영 기관도 대신 정할 수 있음 (기업 요청 시)
       KB.append(org.id, 'att', { at: Date.now(), op: 'ips', ips: r.list, memo: org.att.memo });
       save(); emit('att', {}, org.id);
       return json(res, 200, { ok: true, ips: r.list });
@@ -1835,7 +1839,7 @@ async function adminApi(req, res, p, sess) {
       const loginId = str(b.loginId, 30).toLowerCase();
       const e = idError(loginId) || pwError(b.password); if (e) return BAD(res, e);
       if (S.users.some(u => u.loginId === loginId)) return BAD(res, '이미 쓰는 아이디예요');
-      const user = { id: newId('u'), orgId: org.id, loginId, name: str(b.userName, 30) || loginId };
+      const user = { id: newId('u'), orgId: org.id, loginId, name: str(b.userName, 30) || loginId, role: b.owner ? 'owner' : 'member' };
       setPw(user, b.password); S.users.push(user); save();
       return json(res, 200, { ok: true });
     }
@@ -1858,9 +1862,17 @@ async function adminApi(req, res, p, sess) {
     record(org, { type: m[2], amount: amt, memo: str(b.memo, 100) });
     return json(res, 200, { ok: true, wallet: org.wallet });
   }
-  m = p.match(/^\/api\/admin\/users\/(\w+)\/(password|delete)$/);
+  m = p.match(/^\/api\/admin\/users\/(\w+)\/(password|delete|role)$/);
   if (m) {
     const u = userById(m[1]); if (!u) return BAD(res, '없는 계정이에요', 404);
+    const ownersLeft = () => S.users.filter(x => x.orgId === u.orgId && x !== u && x.role === 'owner').length;
+    if (m[2] === 'role') {
+      const role = b.role === 'owner' ? 'owner' : 'member';
+      if (role === 'member' && u.role === 'owner' && !ownersLeft()) return BAD(res, '기업 대표가 한 명은 있어야 해요. 다른 계정을 먼저 대표로 정해 주세요.');
+      u.role = role; save(); emit('room', {}, u.orgId);
+      return json(res, 200, { ok: true, role });
+    }
+    if (m[2] === 'delete' && u.role === 'owner' && !ownersLeft()) return BAD(res, '마지막 기업 대표 계정은 지울 수 없어요. 다른 계정을 먼저 대표로 정해 주세요.');
     if (m[2] === 'password') { const e = pwError(b.password); if (e) return BAD(res, e); setPw(u, b.password); }
     else S.users = S.users.filter(x => x !== u);
     for (const t in S.sessions) if (S.sessions[t].userId === u.id) delete S.sessions[t]; // 기존 로그인 끊기
@@ -2086,7 +2098,7 @@ async function userApi(req, res, p, sess) {
   if (p === '/api/logout') { delete S.sessions[sess.token]; save(); return json(res, 200, { ok: true }, { 'set-cookie': cookie('', 0) }); }
   if (p === '/api/state' && req.method === 'GET')
     return json(res, 200, {
-      me: { loginId: user.loginId, name: user.name }, org: orgPublic(org), wallet: org.wallet,
+      me: { loginId: user.loginId, name: user.name, role: user.role || 'member' }, org: orgPublic(org), wallet: org.wallet,
       rooms: S.rooms.filter(r => r.orgId === org.id), bots: publicBots(org), experts: publicExperts(),
       telegram: { enabled: !!tgUsername, username: tgUsername }, ai: AI_READY,
       site: org.site && org.site.published ? { url: siteUrl(org.site.slug), slug: org.site.slug, n: (siteVersion(org, org.site.published) || {}).n, published: org.site.published } : { slug: org.site && org.site.slug },
@@ -2223,6 +2235,18 @@ async function userApi(req, res, p, sess) {
   if (p === '/api/att' || p === '/api/att.csv') {
     const qs = new URL(req.url, 'http://x').searchParams, ip = clientIp(req), att = org.att || {};
     const month = /^\d{4}-\d{2}$/.test(qs.get('month') || '') ? qs.get('month') : ATT.dayK(Date.now()).slice(0, 7);
+    if (req.method === 'POST' && qs.get('set') === 'ips') { // 사무실 IP는 기업 대표 계정이 정함
+      if (!isOwner(user)) return BAD(res, '사무실 IP는 기업 대표 계정만 정할 수 있어요', 403);
+      const b = await body(req), r = ATT.parseIps(b.ips);
+      if (r.errors.length) return BAD(res, `IP 형식을 확인해 주세요: ${r.errors.slice(0, 5).join(', ')}`);
+      org.att = org.att || { records: [], denied: [] };
+      Object.assign(org.att, { ips: r.list, memo: str(b.memo, 100), updatedAt: Date.now(), updatedBy: `${user.name} (대표)` });
+      KB.append(org.id, 'att', { at: Date.now(), op: 'ips', by: user.name, ips: r.list, memo: org.att.memo });
+      const room = S.rooms.find(x => x.orgId === org.id && x.bots.includes('attend'));
+      if (room) addMsg(room, { from: 'attend', text: r.list.length ? `${user.name}(대표)님이 출퇴근을 인정할 사무실 IP를 ${r.list.length}개로 정했어요.` : `${user.name}(대표)님이 사무실 IP를 모두 지웠어요. 지금은 출퇴근을 기록할 수 없어요.` });
+      save(); emit('att', {}, org.id); emit('room', {}, org.id);
+      return json(res, 200, { ok: true, ips: r.list });
+    }
     if (req.method === 'POST') {
       const b = await body(req);
       if (b.action !== 'in' && b.action !== 'out') return BAD(res, '출근 또는 퇴근을 골라 주세요');
@@ -2236,7 +2260,7 @@ async function userApi(req, res, p, sess) {
     const people = S.users.filter(u => u.orgId === org.id).map(u => ({ key: 'u:' + u.id, name: u.name, kind: 'web' }));
     const today = ATT.dayK(Date.now()), rep = ATT.monthReport(att, month, people);
     const todayList = [...people, ...rep.people.filter(x => !people.some(p => p.key === x.key))].map(pp => { const r = (att.records || []).find(x => x.key === pp.key && x.date === today); return { key: pp.key, name: pp.name, kind: pp.kind, in: r ? r.in.at : null, out: r && r.out ? r.out.at : null }; });
-    return json(res, 200, { configured: !!(att.ips && att.ips.length), here: !!(att.ips && att.ips.length) && ATT.matcher(att.ips)(ip), myIp: ip, memo: att.memo || '', me: todayList.find(x => x.key === 'u:' + user.id), today: todayList, report: rep,
+    return json(res, 200, { owner: isOwner(user), ips: isOwner(user) ? att.ips || [] : undefined, ipCount: (att.ips || []).length, updatedBy: att.updatedBy || '', updatedAt: att.updatedAt || null, configured: !!(att.ips && att.ips.length), here: !!(att.ips && att.ips.length) && ATT.matcher(att.ips)(ip), myIp: ip, memo: att.memo || '', me: todayList.find(x => x.key === 'u:' + user.id), today: todayList, report: rep,
       denied: (att.denied || []).slice(-30).reverse().map(d => ({ at: d.at, name: d.name, action: d.action, ip: d.ip, via: d.via })) });
   }
   // ----- 구성원별 AI 사용량 -----
@@ -2965,7 +2989,7 @@ async function attendFromRoom(room, org, bot, text, ctx) {
     return say(r.msg);
   }
   // 텔레그램은 접속 IP를 알 수 없음 → 본인에게만 1:1로 링크를 보내고, 사무실 네트워크에서 그 링크를 열어 누르게 함
-  if (!org.att || !org.att.ips || !org.att.ips.length) return sayTg('운영 기관이 아직 이 기업의 출퇴근 IP를 정하지 않았어요.');
+  if (!org.att || !org.att.ips || !org.att.ips.length) return sayTg('기업 대표가 아직 출퇴근을 인정할 사무실 IP를 정하지 않았어요.');
   const token = crypto.randomBytes(16).toString('hex');
   for (const k in S.attLinks) if (S.attLinks[k].exp < Date.now()) delete S.attLinks[k];
   S.attLinks[token] = { orgId: org.id, roomId: room.id, key: 't:' + ctx.tgUid, name: ctx.author, action, exp: Date.now() + ATT_LINK_MIN * 6e4 };

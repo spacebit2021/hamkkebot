@@ -1,4 +1,4 @@
-// 출퇴근 확인: 운영 기관 관리자가 기업별로 정한 IP(사무실 네트워크)에서 접속했을 때만 출근·퇴근을 기록
+// 출퇴근 확인: 기업 대표(또는 운영 기관 관리자)가 정한 IP(사무실 네트워크)에서 접속했을 때만 출근·퇴근을 기록
 // org.att = { ips: ['203.0.113.0/24', ...], memo, updatedAt, updatedBy, records: [...], denied: [...] }
 //   record = { id, date:'YYYY-MM-DD'(한국 날짜, 출근 기준), key, name, kind:'web'|'telegram', in:{at,ip,via}, out:{at,ip,via}|null, outEdits }
 'use strict';
@@ -35,7 +35,7 @@ function matcher(list) {
 
 // who: { key, name, kind }  action: 'in'|'out'
 function act(att, who, action, ip, via, now = Date.now()) {
-  if (!att || !att.ips || !att.ips.length) return { ok: false, code: 'unset', msg: '운영 기관이 아직 이 기업의 출퇴근 IP를 정하지 않았어요. 관리자에게 요청해 주세요.' };
+  if (!att || !att.ips || !att.ips.length) return { ok: false, code: 'unset', msg: '기업 대표가 아직 출퇴근을 인정할 사무실 IP를 정하지 않았어요. 대표 계정의 「출퇴근 → 기록 보기」에서 정할 수 있어요.' };
   const ipn = normIp(ip);
   if (!matcher(att.ips)(ipn)) {
     att.denied = att.denied || []; att.denied.push({ at: now, key: who.key, name: who.name, action, ip: ipn, via });

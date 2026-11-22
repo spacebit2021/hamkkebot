@@ -42,6 +42,8 @@ global.fetch = async (url, opt = {}) => {
 };
 const push = x => { queue.push(x); if (waiter) { const w = waiter; waiter = null; w(); } };
 let uid = 1; const G = -902, gm = (from, name, text) => ({ update_id: uid++, message: { message_id: 10 + uid, chat: { id: G, type: 'group', title: '마을빵공방 업무방' }, from: { id: from, first_name: name }, text } });
+// 역할이 없던 예전 데이터: 기업마다 가장 먼저 만든 계정이 대표가 됨
+fs.writeFileSync(process.env.DATA_FILE, JSON.stringify({ orgs: [{ id: 'oold', name: '기존기업', wallet: 0 }], users: [{ id: 'uold1', orgId: 'oold', loginId: 'olda', name: '먼저' }, { id: 'uold2', orgId: 'oold', loginId: 'oldb', name: '나중' }] }));
 Object.assign(process.env, { ADMIN_PASSWORD: 'adminpass', ANTHROPIC_API_KEY: '', PORT: '3996', TELEGRAM_BOT_TOKEN: 'x', PUBLIC_URL: 'http://localhost:3996', TRUST_PROXY: '' });
 require(path.join(__dirname, '..', 'server.js'));
 const http = require('http');
@@ -52,19 +54,35 @@ const A = mk(), U1 = mk(), U2 = mk(), X = mk(), W = mk(), sl = ms => new Promise
   await A('/api/admin/login', { password: 'adminpass' });
   await A('/api/admin/orgs', { name: '마을빵공방', loginId: 'bread', password: 'password1', userName: '김대표' });
   await A('/api/admin/orgs', { name: '다른기업', loginId: 'other', password: 'password1' });
-  const o = (await A('/api/admin/state')).j.orgs.find(x => x.name === '마을빵공방').id;
+  let ad = (await A('/api/admin/state')).j;
+  const old = ad.orgs.find(x => x.name === '기존기업');
+  chk('예전 데이터: 가장 먼저 만든 계정이 대표', old.users.find(u => u.name === '먼저').role === 'owner' && old.users.find(u => u.name === '나중').role === 'member');
+  const o = ad.orgs.find(x => x.name === '마을빵공방').id;
   await A(`/api/admin/orgs/${o}/users`, { loginId: 'staff', password: 'password1', userName: '이수진' });
+  ad = (await A('/api/admin/state')).j;
+  const ou = ad.orgs.find(x => x.id === o).users, owner = ou.find(u => u.name === '김대표'), staff = ou.find(u => u.name === '이수진');
+  chk('기업을 만들 때 첫 계정 = 대표, 추가 계정 = 구성원', owner.role === 'owner' && staff.role === 'member');
+  chk('마지막 대표는 해제·삭제 못 함', (await A(`/api/admin/users/${owner.id}/role`, { role: 'member' })).j.error.includes('한 명은') && (await A(`/api/admin/users/${owner.id}/delete`, {})).j.error.includes('마지막'));
+  await A(`/api/admin/users/${staff.id}/role`, { role: 'owner' });
+  chk('다른 계정을 대표로 정한 뒤에는 해제 가능', (await A(`/api/admin/users/${owner.id}/role`, { role: 'member' })).j.role === 'member');
+  await A(`/api/admin/users/${owner.id}/role`, { role: 'owner' }); await A(`/api/admin/users/${staff.id}/role`, { role: 'member' });
   await U1('/api/login', { loginId: 'bread', password: 'password1' }); await U2('/api/login', { loginId: 'staff', password: 'password1' }); await X('/api/login', { loginId: 'other', password: 'password1' });
   let st = (await U1('/api/state')).j; const r0 = st.rooms[0].id;
   chk('출퇴근 봇은 토큰을 쓰지 않음', st.costs.attend === 0 && st.att === null);
-  chk('IP 미설정 → 출근 안 됨', (await U1('/api/att', { action: 'in' })).j.error.includes('정하지 않았어요'));
+  chk('IP 미설정 → 출근 안 됨 (대표가 정하라고 안내)', (await U1('/api/att', { action: 'in' })).j.error.includes('기업 대표가 아직'));
+  chk('내 역할 표시', (await U1('/api/state')).j.me.role === 'owner' && (await U2('/api/state')).j.me.role === 'member');
+  let x = await U2('/api/att?set=ips', { ips: '127.0.0.1' });
+  chk('구성원은 사무실 IP를 정할 수 없음 (403)', x.s === 403 && x.j.error.includes('대표'));
+  chk('대표: 잘못된 IP는 저장 거부', (await U1('/api/att?set=ips', { ips: '10.0.0.0/8\n사무실' })).j.error.includes('사무실'));
+  x = await U1('/api/att?set=ips', { ips: '10.0.0.0/8', memo: '본사' });
+  let ga = (await U1('/api/att')).j, gb = (await U2('/api/att')).j;
+  chk('대표가 사무실 IP 저장 → 대표만 목록을 봄, 누가 정했는지 표시', x.j.ok && ga.owner && ga.ips.join() === '10.0.0.0/8' && !gb.owner && gb.ips === undefined && gb.ipCount === 1 && gb.updatedBy === '김대표 (대표)');
   chk('관리자: 잘못된 IP는 저장 거부', (await A(`/api/admin/orgs/${o}/att`, { ips: '10.0.0.0/8\n사무실' })).j.error.includes('사무실'));
-  await A(`/api/admin/orgs/${o}/att`, { ips: '10.0.0.0/8', memo: '본사' });
-  let x = await U1('/api/att', { action: 'in' });
+  x = await U1('/api/att', { action: 'in' });
   chk('사무실 밖 IP → 403 거부 (접속 IP 안내)', x.s === 403 && x.j.error.includes('127.0.0.1'));
   x = await U1('/api/att', { action: 'in' }, { 'x-forwarded-for': '10.1.2.3' });
   chk('X-Forwarded-For를 꾸며도 통과 못 함 (프록시 설정 없을 때)', x.s === 403);
-  await A(`/api/admin/orgs/${o}/att`, { ips: '127.0.0.1\n10.0.0.0/8', memo: '본사' });
+  await U1('/api/att?set=ips', { ips: '127.0.0.1\n10.0.0.0/8', memo: '본사' });
   st = (await U1('/api/state')).j;
   chk('기업 상태: 사무실 네트워크 안', st.att && st.att.configured && st.att.here === true);
   x = await U1('/api/att', { action: 'in' });
@@ -100,7 +118,7 @@ const A = mk(), U1 = mk(), U2 = mk(), X = mk(), W = mk(), sl = ms => new Promise
   chk('쓴 링크는 다시 못 씀', (await W(`/a/${tok}`)).s === 404);
   push(gm(555, '박민호', '/out')); await sl(250);
   const tok2 = sent.filter(s => s.to === 555).pop().text.match(/\/a\/([a-f0-9]{32})/)[1];
-  await A(`/api/admin/orgs/${o}/att`, { ips: '10.0.0.0/8' });
+  await A(`/api/admin/orgs/${o}/att`, { ips: '10.0.0.0/8' }); // 운영 기관도 대신 정할 수 있음
   pg = await W(`/a/${tok2}`, null, {}, 'go=1');
   chk('사무실 밖에서 연 링크 → 거부, 링크는 남아 다시 시도 가능', pg.s === 403 && pg.j.includes('사무실 네트워크가 아니라서') && (await W(`/a/${tok2}`)).s === 200);
   push(gm(777, '최지원', '출근')); await sl(250);
